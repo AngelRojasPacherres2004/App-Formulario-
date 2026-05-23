@@ -30,11 +30,23 @@ def apply_styles():
             
             /* Contenedor principal con fondo semi-transparente para legibilidad */
             .main .block-container {
-                background-color: rgba(255, 255, 255, 0.95);
+                background-color: rgba(255, 255, 255, 0.8);
+                backdrop-filter: blur(10px);
+                -webkit-backdrop-filter: blur(10px);
                 padding: 3rem;
                 border-radius: 1rem;
                 margin-top: 1.5rem;
                 box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            }
+
+            /* Estilo para el contenido de los expanders (como los detalles de trabajador) */
+            [data-testid="stExpanderContent"] {
+                background-color: rgba(255, 255, 255, 0.7); /* Un poco más transparente que el main container */
+                backdrop-filter: blur(8px); /* Un blur ligeramente diferente o igual */
+                -webkit-backdrop-filter: blur(8px);
+                border-radius: 0.5rem; /* Bordes redondeados para el contenido */
+                padding: 1rem; /* Espaciado interno */
+                margin-top: 0.5rem; /* Separación del encabezado del expander */
             }
 
             /* Estilo personalizado para el Sidebar */
