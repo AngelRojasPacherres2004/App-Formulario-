@@ -104,15 +104,16 @@ function RegisterActivity({ user }) {
 
   function handleTaskChange(index, taskKey) {
     const task = taskMap[taskKey];
+    const usesBrands = taskUsesBrandsByDefault(task);
     setRecords((current) =>
       current.map((record, recordIndex) =>
         recordIndex === index
           ? {
               ...emptyRecord(),
               taskKey,
-              usaMarcas: taskUsesBrandsByDefault(task),
+              usaMarcas: usesBrands,
               usaGuia: Boolean(task?.requiere_numero_guia) && !taskUsesGuideBreakdown(task),
-              usaGuias: taskUsesGuideBreakdown(task)
+              usaGuias: taskUsesGuideBreakdown(task) && !usesBrands
             }
           : record
       )
@@ -139,7 +140,7 @@ function RegisterActivity({ user }) {
     const dbType = normalizeMeasurementType(task?.tipo_medicion);
     const [fallbackType, fallbackUnit] = getActivityCaptureMode(title);
     const type = isGroupLeaderTimeTask(task) ? "tiempo" : task?.tipo_medicion ? dbType : normalizeMeasurementType(fallbackType);
-    const unit = task?.unidad_base || fallbackUnit;
+    const unit = task?.unidad_medida || task?.unidad_base || task?.unidad || fallbackUnit;
     const marcas = record.usaMarcas
       ? record.marcas.map((item) => ({ marca_id: Number(item.marca_id), cantidad: Number(item.cantidad) }))
       : [];
@@ -400,7 +401,7 @@ function DynamicRecordFields({ record, task, brands, stores, onChange }) {
   const dbType = normalizeMeasurementType(task?.tipo_medicion);
   const [fallbackType, fallbackUnit] = getActivityCaptureMode(title);
   const type = isGroupLeaderTimeTask(task) ? "tiempo" : task?.tipo_medicion ? dbType : normalizeMeasurementType(fallbackType);
-  const unit = task?.unidad_base || fallbackUnit || "unidades";
+  const unit = task?.unidad_medida || task?.unidad_base || task?.unidad || fallbackUnit || "unidades";
   const usesGuideBreakdown = taskUsesGuideBreakdown(task);
 
   if (type === "cantidad") {
@@ -415,7 +416,7 @@ function DynamicRecordFields({ record, task, brands, stores, onChange }) {
             onChange={(cantidad) => onChange({ cantidad })}
           />
         ) : null}
-        {!usesGuideBreakdown ? <BrandFields record={record} brands={brands} onChange={onChange} /> : null}
+        {!record.usaGuias ? <BrandFields record={record} brands={brands} onChange={onChange} /> : null}
         {usesGuideBreakdown ? <GuideFields record={record} onChange={onChange} /> : null}
         <OptionalContextFields
           record={record}
@@ -522,6 +523,7 @@ function GuideFields({ record, onChange }) {
         checked={record.usaGuias}
         onChange={(usaGuias) => onChange({
           usaGuias,
+          usaMarcas: usaGuias ? false : record.usaMarcas,
           usaGuia: false,
           numeroGuia: "",
           guias: record.guias?.length ? record.guias : [emptyGuideShare()]
@@ -541,7 +543,13 @@ function BrandFields({ record, brands, onChange }) {
       <CheckboxInput
         label="Añadir marcas"
         checked={record.usaMarcas}
-        onChange={(usaMarcas) => onChange({ usaMarcas, marcas: record.marcas?.length ? record.marcas : [emptyBrandShare()] })}
+        onChange={(usaMarcas) =>
+          onChange({
+            usaMarcas,
+            usaGuias: usaMarcas ? false : record.usaGuias,
+            marcas: record.marcas?.length ? record.marcas : [emptyBrandShare()]
+          })
+        }
         hint="Actívalo para repartir la cantidad entre las marcas existentes."
       />
       {record.usaMarcas ? (

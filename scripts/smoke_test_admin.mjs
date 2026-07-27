@@ -20,7 +20,7 @@ function assert(condition, message) {
 
 const env = readEnv();
 const db = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, { auth: { persistSession: false } });
-const origin = `http://127.0.0.1:${env.API_PORT || 5180}`;
+const origin = `http://127.0.0.1:${process.env.API_PORT || env.API_PORT || 5180}`;
 const marker = `__smoke_${Date.now()}`;
 const cleanup = { userIds: [], storeIds: [], taskIds: [], movementIds: [], attendanceUserIds: [] };
 const checks = [];
@@ -85,19 +85,36 @@ try {
       password_hash: "temporal-1",
       rol: "operante",
       activo: true,
-      fecha_cumpleanos: "2000-01-01"
+      fecha_cumpleanos: "2000-01-01",
+      sueldo: 1250.5
     })
   });
-  assert(createdUser.response.ok && createdUser.payload.user?.id, "No se pudo crear el usuario temporal.");
+  assert(
+    createdUser.response.ok &&
+      createdUser.payload.user?.id &&
+      Number(createdUser.payload.user?.sueldo) === 1250.5,
+    "No se pudo crear el usuario temporal con sueldo."
+  );
   const userId = Number(createdUser.payload.user.id);
   cleanup.userIds.push(userId);
 
   const updatedUser = await api(`/api/users/${userId}`, {
     method: "PATCH",
     headers: auth,
-    body: JSON.stringify({ nombre: `${marker}_editado`, email: `${marker}_editado`, password_hash: "temporal-2", activo: true })
+    body: JSON.stringify({
+      nombre: `${marker}_editado`,
+      email: `${marker}_editado`,
+      password_hash: "temporal-2",
+      activo: true,
+      sueldo: 1425.75
+    })
   });
-  assert(updatedUser.response.ok && updatedUser.payload.user?.nombre === `${marker}_editado`, "No se pudo editar el usuario.");
+  assert(
+    updatedUser.response.ok &&
+      updatedUser.payload.user?.nombre === `${marker}_editado` &&
+      Number(updatedUser.payload.user?.sueldo) === 1425.75,
+    `No se pudo editar el usuario y su sueldo: ${JSON.stringify(updatedUser.payload)}`
+  );
   const editedLogin = await api("/api/login", {
     method: "POST",
     body: JSON.stringify({ email: `${marker}_editado`, password: "temporal-2" })
@@ -186,7 +203,12 @@ try {
       requiere_numero_guia: false
     })
   });
-  assert(createdTask.response.ok && createdTask.payload.task?.id, "No se pudo crear la tarea.");
+  assert(
+    createdTask.response.ok &&
+      createdTask.payload.task?.id &&
+      createdTask.payload.task?.requiere_marca === true,
+    `La tarea medida en pares no habilito marcas automaticamente: ${JSON.stringify(createdTask.payload)}`
+  );
   const taskId = Number(createdTask.payload.task.id);
   cleanup.taskIds.push(taskId);
   const updatedTask = await api(`/api/tasks/${taskId}`, {

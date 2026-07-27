@@ -141,7 +141,7 @@ async function handleLogin(request, response) {
 
     const result = await supabase
       .from("usuarios")
-      .select("id,nombre,email,rol,activo,created_at,fecha_cumpleanos")
+      .select("id,nombre,email,rol,activo,created_at,fecha_cumpleanos,sueldo")
       .eq("email", email)
       .eq("password_hash", password)
       .limit(1);
@@ -185,6 +185,11 @@ function isActive(value) {
 
 function taskTitle(task) {
   return String(task?.nombre || task?.titulo || "");
+}
+
+function isPairUnit(value) {
+  const words = normalizeRole(value).split(/\s+/).filter(Boolean);
+  return words.includes("par") || words.includes("pares");
 }
 
 function nullableNumber(value) {
@@ -261,13 +266,15 @@ function normalizeActivityLog(row) {
 }
 
 function taskPayloadForDb(body, tableName) {
+  const unit = body.unidad_medida ?? body.unidad_base;
+  const requiresBrand = isPairUnit(unit) ? true : body.requiere_marca;
   const payload = tableName === "tarea"
     ? {
         nombre: body.nombre ?? body.titulo,
         activo: body.activo,
-        unidad_medida: body.unidad_medida ?? body.unidad_base,
+        unidad_medida: unit,
         tipo_tarea: body.tipo_tarea,
-        requiere_marca: body.requiere_marca,
+        requiere_marca: requiresBrand,
         requiere_tiempo: body.requiere_tiempo,
         requiere_lote: body.requiere_lote,
         requiere_numero_guia: body.requiere_numero_guia
@@ -282,7 +289,7 @@ function taskPayloadForDb(body, tableName) {
         puntos_turno_simple: body.puntos_turno_simple ?? body.puntaje_turno_simple,
         puntos_turno_completo: body.puntos_turno_completo ?? body.puntaje_turno_completo,
         tipo_tarea: body.tipo_tarea,
-        requiere_marca: body.requiere_marca
+        requiere_marca: requiresBrand
       };
 
   if (payload.activo === undefined && body.estado !== undefined) {
@@ -300,7 +307,7 @@ async function selectUsers() {
   const [usersResult, movementsResult] = await Promise.all([
     supabase
       .from("usuarios")
-      .select("id,nombre,email,rol,activo,created_at,fecha_cumpleanos")
+      .select("id,nombre,email,rol,activo,created_at,fecha_cumpleanos,sueldo")
       .order("id", { ascending: true }),
     supabase
       .from("movimientos_personal")
@@ -426,12 +433,23 @@ async function saveEmploymentDates(userId, dates) {
 }
 
 function userPayloadForDb(body, { creating = false } = {}) {
+  let sueldo;
+  if (body.sueldo !== undefined) {
+    sueldo = Number(body.sueldo);
+    if (!Number.isFinite(sueldo) || sueldo < 0 || sueldo > 9999999999.99) {
+      throw new Error("El sueldo debe ser un monto valido mayor o igual a cero.");
+    }
+    sueldo = Math.round((sueldo + Number.EPSILON) * 100) / 100;
+  }
+
   const payload = {
     nombre: body.nombre === undefined ? undefined : String(body.nombre).trim(),
     email: body.email === undefined ? undefined : String(body.email).trim().toLowerCase(),
     rol: body.rol === undefined ? undefined : normalizeRole(body.rol),
     activo: body.activo,
-    fecha_cumpleanos: body.fecha_cumpleanos || null,
+    fecha_cumpleanos:
+      body.fecha_cumpleanos === undefined ? undefined : body.fecha_cumpleanos || null,
+    sueldo,
     password_hash: body.password_hash === undefined ? undefined : String(body.password_hash)
   };
 

@@ -158,7 +158,7 @@ export async function selectUsers() {
   const apiResult = await requestLocalApi("/api/users");
   if (apiResult?.users) return apiResult.users;
 
-  const cols = "id,nombre,email,rol,activo,created_at,fecha_cumpleanos";
+  const cols = "id,nombre,email,rol,activo,created_at,fecha_cumpleanos,sueldo";
   const precise = await db().from("usuarios").select(cols).order("id", { ascending: true });
   if (!precise.error) return precise.data || [];
   return ensureOk(await db().from("usuarios").select("*").order("id", { ascending: true })) || [];

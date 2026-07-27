@@ -27,6 +27,7 @@ import {
   emptyQuantityRanges,
   getActivityCaptureMode,
   getTaskTitle,
+  isPairUnit,
   MAX_SCORE_QUANTITY,
   normalizeMeasurementType,
   normalizeRole,
@@ -79,6 +80,7 @@ function UsersPanel() {
     email: "",
     password: "",
     fecha_cumpleanos: "",
+    sueldo: "0.00",
     rol: "operante",
     activo: true
   });
@@ -90,6 +92,7 @@ function UsersPanel() {
     rol: "operante",
     activo: true,
     password: "",
+    sueldo: "0.00",
     fecha_ingreso: "",
     fecha_salida: ""
   });
@@ -105,6 +108,7 @@ function UsersPanel() {
       rol: normalizeRole(selectedUser.rol) || "operante",
       activo: boolValue(selectedUser.activo),
       password: "",
+      sueldo: Number(selectedUser.sueldo || 0).toFixed(2),
       fecha_ingreso: selectedUser.fecha_ingreso || "",
       fecha_salida: selectedUser.fecha_salida || ""
     });
@@ -125,11 +129,20 @@ function UsersPanel() {
           email: createForm.email.trim().toLowerCase(),
           rol: createForm.rol,
           activo: createForm.activo,
-          fecha_cumpleanos: createForm.fecha_cumpleanos || null
+          fecha_cumpleanos: createForm.fecha_cumpleanos || null,
+          sueldo: Number(createForm.sueldo)
         },
         createForm.password
       );
-      setCreateForm({ nombre: "", email: "", password: "", fecha_cumpleanos: "", rol: "operante", activo: true });
+      setCreateForm({
+        nombre: "",
+        email: "",
+        password: "",
+        fecha_cumpleanos: "",
+        sueldo: "0.00",
+        rol: "operante",
+        activo: true
+      });
       setStatus({ type: "success", message: "Usuario creado correctamente." });
       reload();
     } catch (err) {
@@ -165,6 +178,7 @@ function UsersPanel() {
           rol: editForm.rol,
           activo: editForm.fecha_ingreso ? !editForm.fecha_salida : editForm.activo,
           fecha_cumpleanos: editForm.fecha_cumpleanos || null,
+          sueldo: Number(editForm.sueldo),
           fecha_ingreso: editForm.fecha_ingreso || null,
           fecha_salida: editForm.fecha_salida || null
         },
@@ -205,6 +219,7 @@ function UsersPanel() {
     Nombre: user.nombre,
     Usuario: user.email,
     Rol: normalizeRole(user.rol),
+    Sueldo: Number(user.sueldo || 0).toLocaleString("es-PE", { style: "currency", currency: "PEN" }),
     Activo: boolValue(user.activo),
     "Fecha nacimiento": user.fecha_cumpleanos || ""
   }));
@@ -238,6 +253,15 @@ function UsersPanel() {
               value={createForm.fecha_cumpleanos}
               onChange={(fecha_cumpleanos) => setCreateForm({ ...createForm, fecha_cumpleanos })}
             />
+            <TextInput
+              label="Sueldo"
+              type="number"
+              min="0"
+              max="9999999999.99"
+              step="0.01"
+              value={createForm.sueldo}
+              onChange={(sueldo) => setCreateForm({ ...createForm, sueldo })}
+            />
             <SelectInput label="Rol" value={createForm.rol} onChange={(rol) => setCreateForm({ ...createForm, rol })} options={roleOptions} />
             <CheckboxInput label="Activo" checked={createForm.activo} onChange={(activo) => setCreateForm({ ...createForm, activo })} />
             <div className="form-span">
@@ -268,6 +292,15 @@ function UsersPanel() {
                   max={birthdayMaxISO()}
                   value={editForm.fecha_cumpleanos || ""}
                   onChange={(fecha_cumpleanos) => setEditForm({ ...editForm, fecha_cumpleanos })}
+                />
+                <TextInput
+                  label="Sueldo"
+                  type="number"
+                  min="0"
+                  max="9999999999.99"
+                  step="0.01"
+                  value={editForm.sueldo}
+                  onChange={(sueldo) => setEditForm({ ...editForm, sueldo })}
                 />
                 <SelectInput label="Rol" value={editForm.rol} onChange={(rol) => setEditForm({ ...editForm, rol })} options={roleOptions} />
                 <TextInput
@@ -333,6 +366,7 @@ function defaultTaskForm() {
 
 function taskPayloadFromForm(form) {
   const tipo = normalizeMeasurementType(form.tipo_medicion);
+  const usesPairs = isPairUnit(form.unidad_base);
   return {
     nombre: form.titulo.trim(),
     titulo: form.titulo.trim(),
@@ -341,7 +375,7 @@ function taskPayloadFromForm(form) {
     tipo_medicion: tipo,
     unidad_medida: form.unidad_base.trim() || "Ninguna",
     unidad_base: form.unidad_base.trim() || null,
-    requiere_marca: Boolean(form.requiere_marca),
+    requiere_marca: usesPairs || Boolean(form.requiere_marca),
     requiere_tiempo: Boolean(form.requiere_tiempo || tipo === "tiempo"),
     requiere_lote: Boolean(form.requiere_lote),
     requiere_numero_guia: Boolean(form.requiere_numero_guia)
@@ -576,14 +610,22 @@ function TaskForm({ form, setForm, onSubmit, saving, submitLabel }) {
         <TextInput
           label="Unidad base"
           value={form.unidad_base}
-          onChange={(unidad_base) => setForm({ ...form, unidad_base })}
+          onChange={(unidad_base) =>
+            setForm({
+              ...form,
+              unidad_base,
+              requiere_marca: isPairUnit(unidad_base) || form.requiere_marca
+            })
+          }
           placeholder="Pares, cajas, bultos o Ninguna"
         />
         <CheckboxInput label="Tarea activa" checked={form.activo} onChange={(activo) => setForm({ ...form, activo })} />
         <CheckboxInput
           label="Requiere marca"
-          checked={form.requiere_marca}
+          checked={isPairUnit(form.unidad_base) || form.requiere_marca}
+          disabled={isPairUnit(form.unidad_base)}
           onChange={(requiere_marca) => setForm({ ...form, requiere_marca })}
+          hint={isPairUnit(form.unidad_base) ? "Las tareas medidas en pares usan marcas automaticamente." : undefined}
         />
         <CheckboxInput label="Requiere tiempo" checked={form.requiere_tiempo} onChange={(requiere_tiempo) => setForm({ ...form, requiere_tiempo })} />
         <CheckboxInput label="Requiere lote" checked={form.requiere_lote} onChange={(requiere_lote) => setForm({ ...form, requiere_lote })} />

@@ -120,7 +120,13 @@ export function isGroupLeaderTimeTask(task) {
   return groupLeaderTimeTaskNames.has(normalizeText(getTaskTitle(task)));
 }
 
+export function isPairUnit(value) {
+  const words = normalizeText(value).split(" ").filter(Boolean);
+  return words.includes("par") || words.includes("pares");
+}
+
 export function taskUsesBrandsByDefault(task) {
+  if (isPairUnit(task?.unidad_medida || task?.unidad_base || task?.unidad)) return true;
   if (typeof task?.requiere_marca === "boolean") return task.requiere_marca;
   return defaultBrandTaskNames.has(normalizeText(getTaskTitle(task)));
 }

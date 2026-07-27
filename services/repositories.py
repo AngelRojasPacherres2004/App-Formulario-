@@ -79,7 +79,7 @@ def set_task_score_ranges(supabase: Client, tarea_id: Any, ranges: list[dict[str
 
 
 def select_users(supabase: Client) -> list[dict[str, Any]]:
-    cols = "id,nombre,email,rol,activo,created_at,fecha_cumpleanos"
+    cols = "id,nombre,email,rol,activo,created_at,fecha_cumpleanos,sueldo"
     try:
         return supabase.table("usuarios").select(cols).order("id", desc=False).execute().data or []
     except Exception:

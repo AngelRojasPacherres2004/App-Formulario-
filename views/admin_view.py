@@ -73,6 +73,7 @@ def _users_crud(supabase: Client) -> None:
                 min_value=birthday_min,
                 max_value=birthday_max,
             )
+            sueldo = st.number_input("Sueldo", min_value=0.0, value=0.0, step=0.01, format="%.2f")
             rol = st.selectbox("Rol", ["administrador", "operante", "jefe de equipo"])
             activo = st.checkbox("Activo", value=True)
             ok = st.form_submit_button("Crear usuario")
@@ -84,6 +85,7 @@ def _users_crud(supabase: Client) -> None:
                 "rol": rol,
                 "activo": activo,
                 "fecha_cumpleanos": fecha_cumpleanos.isoformat() if fecha_cumpleanos else None,
+                "sueldo": round(float(sueldo), 2),
             }
             create_user(supabase, payload, password)
             st.success("Usuario creado.")
@@ -113,6 +115,13 @@ def _users_crud(supabase: Client) -> None:
                     min_value=birthday_min,
                     max_value=birthday_max,
                 )
+                new_sueldo = st.number_input(
+                    "Sueldo",
+                    min_value=0.0,
+                    value=float(selected.get("sueldo") or 0),
+                    step=0.01,
+                    format="%.2f",
+                )
                 role_options = ["administrador", "operante", "jefe de equipo"]
                 current_role = _normalize_role(selected.get("rol"))
                 role_index = role_options.index(current_role) if current_role in role_options else 0
@@ -132,6 +141,7 @@ def _users_crud(supabase: Client) -> None:
                     "rol": new_rol,
                     "activo": new_activo,
                     "fecha_cumpleanos": new_birthday.isoformat() if new_birthday else None,
+                    "sueldo": round(float(new_sueldo), 2),
                 }
                 update_user(supabase, selected["id"], changes, new_password.strip() or None)
                 st.success("Usuario actualizado.")

@@ -9,7 +9,9 @@ create table if not exists public.usuarios (
   rol text not null check (rol in ('administrador', 'operante', 'jefe de equipo', 'jefe de grupo', 'otros')),
   activo boolean not null default true,
   created_at timestamptz not null default now(),
-  fecha_cumpleanos date
+  fecha_cumpleanos date,
+  sueldo numeric(12,2) not null default 0
+    check (sueldo >= 0)
 );
 
 create table if not exists public.tarea (
@@ -20,6 +22,7 @@ create table if not exists public.tarea (
   tipo_medicion text not null default 'cantidad'
     check (tipo_medicion in ('cantidad', 'cumplimiento', 'tiempo', 'turno')),
   unidad_base text,
+  requiere_marca boolean not null default false,
   puntaje_fijo integer,
   puntaje_turno_simple integer,
   puntaje_turno_completo integer,
