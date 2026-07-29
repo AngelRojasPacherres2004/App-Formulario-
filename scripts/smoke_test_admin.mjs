@@ -22,7 +22,14 @@ const env = readEnv();
 const db = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, { auth: { persistSession: false } });
 const origin = `http://127.0.0.1:${process.env.API_PORT || env.API_PORT || 5180}`;
 const marker = `__smoke_${Date.now()}`;
-const cleanup = { userIds: [], storeIds: [], taskIds: [], movementIds: [], attendanceUserIds: [] };
+const cleanup = {
+  userIds: [],
+  storeIds: [],
+  taskIds: [],
+  movementIds: [],
+  activityIds: [],
+  attendanceUserIds: []
+};
 const checks = [];
 
 async function api(path, options = {}) {
@@ -121,6 +128,35 @@ try {
   });
   assert(editedLogin.response.ok, "El usuario editado no pudo iniciar sesion.");
   checks.push("crear y editar usuario");
+
+  const cleaningTask = await db
+    .from("tarea")
+    .select("id,nombre")
+    .ilike("nombre", "Limpieza")
+    .limit(1)
+    .maybeSingle();
+  if (cleaningTask.error) throw cleaningTask.error;
+  assert(cleaningTask.data?.id, "No se encontro la tarea Limpieza para validar el registro sin tienda.");
+  const cleaningLog = await api("/api/activity-logs", {
+    method: "POST",
+    headers: { authorization: `Bearer ${editedLogin.payload.sessionToken}` },
+    body: JSON.stringify({
+      tarea_id: cleaningTask.data.id,
+      fecha_registro: "2099-12-28",
+      tipo_medicion: "fijo",
+      cumplimiento: true,
+      puntos_obtenidos: 1
+    })
+  });
+  assert(
+    cleaningLog.response.ok && cleaningLog.payload.log?.id,
+    `Limpieza no se pudo guardar sin tienda: ${JSON.stringify(cleaningLog.payload)}`
+  );
+  const cleaningLogId = Number(cleaningLog.payload.log.id);
+  cleanup.activityIds.push(cleaningLogId);
+  await db.from("registros_tareas").delete().eq("id", cleaningLogId);
+  cleanup.activityIds = cleanup.activityIds.filter((id) => id !== cleaningLogId);
+  checks.push("registrar Limpieza sin tienda");
 
   const attendanceDate = "2099-12-30";
   const markedPresent = await api("/api/attendances", {
@@ -229,6 +265,7 @@ try {
 } finally {
   for (const id of cleanup.movementIds) await db.from("movimientos_personal").delete().eq("id", id);
   for (const id of cleanup.attendanceUserIds) await db.from("asistencias").delete().eq("usuario_id", id);
+  for (const id of cleanup.activityIds) await db.from("registros_tareas").delete().eq("id", id);
   for (const id of cleanup.taskIds) {
     await db.from("reglas_puntaje").delete().eq("tarea_id", id);
     await db.from("tarea").delete().eq("id", id);

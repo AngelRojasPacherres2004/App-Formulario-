@@ -935,6 +935,139 @@ tbody tr:hover {
   padding: 0.88rem;
 }
 
+.record-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.record-remove-btn {
+  width: 32px;
+  height: 32px;
+  border-color: rgba(251, 113, 133, 0.28);
+  color: var(--coral);
+}
+
+.record-remove-btn:hover {
+  border-color: rgba(251, 113, 133, 0.55);
+  background: rgba(251, 113, 133, 0.12);
+  color: #fecdd3;
+}
+
+.save-success-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(3, 10, 9, 0.82);
+  backdrop-filter: blur(8px);
+  overscroll-behavior: contain;
+  animation: save-overlay-in 0.2s ease-out;
+}
+
+.save-success-dialog {
+  width: min(680px, calc(100vw - 2rem));
+  min-height: 390px;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 1.5rem;
+  padding: clamp(1.6rem, 5vw, 3rem);
+  border: 1px solid rgba(45, 212, 191, 0.5);
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at top, rgba(45, 212, 191, 0.18), transparent 48%),
+    linear-gradient(145deg, #172522, #0d1715);
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.62),
+    0 0 0 1px rgba(255, 255, 255, 0.035) inset;
+  text-align: center;
+  animation: save-dialog-in 0.25s ease-out;
+}
+
+.save-success-icon {
+  width: 104px;
+  height: 104px;
+  display: grid;
+  place-items: center;
+  border: 2px solid rgba(45, 212, 191, 0.5);
+  border-radius: 50%;
+  background: rgba(45, 212, 191, 0.12);
+  color: var(--accent);
+  box-shadow: 0 0 42px rgba(45, 212, 191, 0.22);
+}
+
+.save-success-icon svg {
+  width: 58px;
+  height: 58px;
+}
+
+.save-success-copy {
+  display: grid;
+  gap: 0.65rem;
+  max-width: 540px;
+}
+
+.save-success-copy h2 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: clamp(1.65rem, 4vw, 2.4rem);
+  line-height: 1.12;
+}
+
+.save-success-copy p:not(.eyebrow) {
+  margin: 0;
+  color: var(--muted);
+  font-size: 1.05rem;
+}
+
+.save-success-copy strong {
+  color: var(--gold);
+  font-size: 1.18rem;
+}
+
+.save-success-confirm {
+  width: min(320px, 100%);
+  min-height: 54px;
+  font-size: 1.05rem;
+}
+
+@keyframes save-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes save-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (max-width: 600px) {
+  .save-success-dialog {
+    min-height: 360px;
+    border-radius: 20px;
+  }
+
+  .save-success-icon {
+    width: 88px;
+    height: 88px;
+  }
+
+  .save-success-icon svg {
+    width: 50px;
+    height: 50px;
+  }
+}
+
 .sticky-actions {
   position: sticky;
   bottom: 0.75rem;

@@ -192,6 +192,19 @@ function isPairUnit(value) {
   return words.includes("par") || words.includes("pares");
 }
 
+function taskUsesStore(task) {
+  const title = normalizeRole(taskTitle(task));
+  const storeTaskNames = [
+    "pedido mayorista",
+    "visita de tienda",
+    "picking",
+    "apoyo tienda",
+    "apoyo a tienda"
+  ];
+  return title.startsWith("revision de guia") ||
+    storeTaskNames.some((taskName) => title === taskName || title.startsWith(`${taskName} `));
+}
+
 function nullableNumber(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
@@ -1090,6 +1103,7 @@ async function handleCreateActivityLog(request, response) {
     const storesQuantity = !scoringTypes.has("fijo") && !scoringTypes.has("turno") &&
       !["fijo", "turno", "cumplimiento"].includes(requestedType);
     const isTimeTask = isGroupLeaderTimeTask(taskResult.data);
+    const requiresStore = taskUsesStore(taskResult.data);
     if (isTimeTask && body.tiempo_minutos !== null && body.tiempo_minutos !== undefined && body.tiempo_minutos !== "") {
       sendJson(response, 403, { error: "El operante no puede registrar el tiempo. Debe hacerlo el jefe de equipo." });
       return;
@@ -1126,7 +1140,7 @@ async function handleCreateActivityLog(request, response) {
       cantidad: requestedQuantity,
       turno: body.turno ? String(body.turno).trim() : null,
       cumplimiento: body.cumplimiento === undefined ? null : Boolean(body.cumplimiento),
-      tienda_id: nullableNumber(body.tienda_id),
+      tienda_id: requiresStore ? nullableNumber(body.tienda_id) : null,
       numero_guia: body.numero_guia ? String(body.numero_guia).trim() : null,
       observacion: body.observacion || body.detalle ? String(body.observacion || body.detalle).trim() : null,
       puntos_obtenidos: nullableNumber(body.puntos_obtenidos) ?? 0
@@ -1138,8 +1152,8 @@ async function handleCreateActivityLog(request, response) {
       sendJson(response, 400, { error: "Usuario y tarea son obligatorios." });
       return;
     }
-    if (normalizeRole(session.rol) === "operante" && !payload.tienda_id) {
-      sendJson(response, 400, { error: "La tienda es obligatoria para registrar cualquier tarea del operante." });
+    if (requiresStore && !payload.tienda_id) {
+      sendJson(response, 400, { error: `La tienda es obligatoria para ${taskTitle(taskResult.data)}.` });
       return;
     }
     if (payload.tienda_id) {

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Minus, Plus, RefreshCcw, Save } from "lucide-react";
+import { CheckCircle2, Minus, Plus, RefreshCcw, Save, X } from "lucide-react";
 import {
   createWorkerActivityLog,
   friendlyError,
@@ -23,7 +23,8 @@ import {
   normalizeMeasurementType,
   SIMPLE_SHIFT,
   taskUsesBrandsByDefault,
-  taskUsesGuideBreakdown
+  taskUsesGuideBreakdown,
+  taskUsesStore
 } from "../lib/scoring";
 import { useAsyncData } from "../lib/hooks";
 import {
@@ -31,6 +32,7 @@ import {
   Button,
   CheckboxInput,
   DataTable,
+  IconButton,
   LoadingBlock,
   Panel,
   SelectInput,
@@ -83,6 +85,7 @@ function RegisterActivity({ user }) {
   const stores = data.stores || [];
   const [records, setRecords] = useState([emptyRecord()]);
   const [status, setStatus] = useState(null);
+  const [successDialog, setSuccessDialog] = useState(null);
   const [saving, setSaving] = useState(false);
 
   const taskMap = useMemo(() => {
@@ -130,6 +133,14 @@ function RegisterActivity({ user }) {
     setRecords(records.slice(0, -1));
   }
 
+  function removeRecordAt(index) {
+    setRecords((current) => {
+      if (current.length === 1) return [emptyRecord()];
+      return current.filter((_, recordIndex) => recordIndex !== index);
+    });
+    setStatus(null);
+  }
+
   function selectedTaskFor(record) {
     return taskMap[record.taskKey] || null;
   }
@@ -147,7 +158,8 @@ function RegisterActivity({ user }) {
     const guias = taskUsesGuideBreakdown(task) && record.usaGuias
       ? record.guias.map((item) => ({ numero_guia: String(item.numero_guia || "").trim(), cantidad: Number(item.cantidad) }))
       : [];
-    const tiendaId = record.tiendaId ? Number(record.tiendaId) : null;
+    const usesStore = taskUsesStore(task);
+    const tiendaId = usesStore && record.tiendaId ? Number(record.tiendaId) : null;
     const numeroGuia = !guias.length && record.usaGuia ? String(record.numeroGuia || "").trim() : null;
 
     let cantidad = null;
@@ -186,6 +198,7 @@ function RegisterActivity({ user }) {
       turno,
       marcas,
       guias,
+      usesStore,
       tiendaId,
       numeroGuia
     };
@@ -202,7 +215,7 @@ function RegisterActivity({ user }) {
       seen.add(record.taskKey);
 
       const shape = recordPayloadShape(record);
-      if (!stores.some((store) => String(store.id) === String(record.tiendaId))) {
+      if (shape.usesStore && !stores.some((store) => String(store.id) === String(record.tiendaId))) {
         return `Selecciona una tienda valida para ${shape.title}.`;
       }
       if (record.usaGuia && !String(record.numeroGuia || "").trim()) {
@@ -248,6 +261,7 @@ function RegisterActivity({ user }) {
 
   async function handleSave() {
     setStatus(null);
+    setSuccessDialog(null);
     const validation = validateRecords();
     if (validation) {
       setStatus({ type: "error", message: validation });
@@ -326,7 +340,7 @@ function RegisterActivity({ user }) {
       }
 
       setRecords([emptyRecord()]);
-      setStatus({ type: "success", message: `Se guardaron ${saved} registros. Puntos acumulados: ${totalPoints}.` });
+      setSuccessDialog({ saved, totalPoints });
     } catch (err) {
       setStatus({ type: "error", message: friendlyError(err) });
     } finally {
@@ -362,7 +376,16 @@ function RegisterActivity({ user }) {
           const selectedTask = selectedTaskFor(record);
           return (
             <div className="record-card" key={index}>
-              <div className="record-title">Registro {index + 1}</div>
+              <div className="record-card-header">
+                <div className="record-title">Registro {index + 1}</div>
+                <IconButton
+                  type="button"
+                  className="record-remove-btn"
+                  label={`Quitar registro ${index + 1}`}
+                  icon={X}
+                  onClick={() => removeRecordAt(index)}
+                />
+              </div>
               <SelectInput
                 label="Tarea realizada"
                 value={record.taskKey || (index === 0 ? NO_TASK_OPTION : "")}
@@ -392,6 +415,38 @@ function RegisterActivity({ user }) {
       <div className="form-actions sticky-actions">
         <Button icon={Save} loading={saving} onClick={handleSave} disabled={!tasks.length}>Guardar registros</Button>
       </div>
+
+      {successDialog ? (
+        <div className="save-success-overlay" role="presentation">
+          <section
+            className="save-success-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="save-success-title"
+            aria-describedby="save-success-description"
+          >
+            <div className="save-success-icon" aria-hidden="true">
+              <CheckCircle2 />
+            </div>
+            <div className="save-success-copy">
+              <p className="eyebrow">Proceso completado</p>
+              <h2 id="save-success-title">¡Registros guardados correctamente!</h2>
+              <p id="save-success-description">
+                Se guardaron {successDialog.saved} registro{successDialog.saved === 1 ? "" : "s"} sin errores.
+              </p>
+              <strong>Puntos acumulados: {successDialog.totalPoints}</strong>
+            </div>
+            <Button
+              type="button"
+              className="save-success-confirm"
+              autoFocus
+              onClick={() => setSuccessDialog(null)}
+            >
+              OK, continuar
+            </Button>
+          </section>
+        </div>
+      ) : null}
     </Panel>
   );
 }
@@ -403,6 +458,7 @@ function DynamicRecordFields({ record, task, brands, stores, onChange }) {
   const type = isGroupLeaderTimeTask(task) ? "tiempo" : task?.tipo_medicion ? dbType : normalizeMeasurementType(fallbackType);
   const unit = task?.unidad_medida || task?.unidad_base || task?.unidad || fallbackUnit || "unidades";
   const usesGuideBreakdown = taskUsesGuideBreakdown(task);
+  const usesStore = taskUsesStore(task);
 
   if (type === "cantidad") {
     return (
@@ -422,6 +478,7 @@ function DynamicRecordFields({ record, task, brands, stores, onChange }) {
           record={record}
           stores={stores}
           onChange={onChange}
+          showStore={usesStore}
           showGuide={!usesGuideBreakdown || !record.usaGuias}
         />
         <TextArea label="Detalle" value={record.detalle} onChange={(detalle) => onChange({ detalle })} placeholder="Comentarios opcionales" />
@@ -441,7 +498,7 @@ function DynamicRecordFields({ record, task, brands, stores, onChange }) {
           onChange={(cantidad) => onChange({ cantidad })}
         />
         <BrandFields record={record} brands={brands} onChange={onChange} />
-        <OptionalContextFields record={record} stores={stores} onChange={onChange} />
+        <OptionalContextFields record={record} stores={stores} onChange={onChange} showStore={usesStore} />
         <TextArea label="Detalle" value={record.detalle} onChange={(detalle) => onChange({ detalle })} placeholder="Comentarios opcionales" />
       </div>
     );
@@ -456,7 +513,7 @@ function DynamicRecordFields({ record, task, brands, stores, onChange }) {
           disabled
           hint="Esta tarea siempre se registra como cumplida."
         />
-        <OptionalContextFields record={record} stores={stores} onChange={onChange} />
+        <OptionalContextFields record={record} stores={stores} onChange={onChange} showStore={usesStore} />
         <TextArea label="Detalle" value={record.detalle} onChange={(detalle) => onChange({ detalle })} placeholder="Comentarios opcionales" />
         <Alert>Esta tarea usa el puntaje fijo definido por administracion.</Alert>
       </div>
@@ -471,7 +528,7 @@ function DynamicRecordFields({ record, task, brands, stores, onChange }) {
         onChange={(turno) => onChange({ turno })}
         options={[SIMPLE_SHIFT, FULL_SHIFT]}
       />
-      <OptionalContextFields record={record} stores={stores} onChange={onChange} />
+      <OptionalContextFields record={record} stores={stores} onChange={onChange} showStore={usesStore} />
       <TextArea label="Detalle" value={record.detalle} onChange={(detalle) => onChange({ detalle })} placeholder="Comentarios opcionales" />
       <Alert>
         Puntaje configurado: simple {task.puntaje_turno_simple || task.puntos_turno_simple || 0}, completo{" "}
@@ -481,18 +538,20 @@ function DynamicRecordFields({ record, task, brands, stores, onChange }) {
   );
 }
 
-function OptionalContextFields({ record, stores, onChange, showGuide = true }) {
+function OptionalContextFields({ record, stores, onChange, showStore = false, showGuide = true }) {
   return (
     <>
-      <SelectInput
-        label="Tienda"
-        value={record.tiendaId}
-        onChange={(tiendaId) => onChange({ tiendaId })}
-        options={[
-          { value: "", label: "Selecciona una tienda" },
-          ...stores.map((store) => ({ value: String(store.id), label: store.nombre }))
-        ]}
-      />
+      {showStore ? (
+        <SelectInput
+          label="Tienda"
+          value={record.tiendaId}
+          onChange={(tiendaId) => onChange({ tiendaId })}
+          options={[
+            { value: "", label: "Selecciona una tienda" },
+            ...stores.map((store) => ({ value: String(store.id), label: store.nombre }))
+          ]}
+        />
+      ) : null}
       {showGuide ? (
         <>
           <CheckboxInput

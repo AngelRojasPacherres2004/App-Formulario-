@@ -135,6 +135,19 @@ export function taskUsesGuideBreakdown(task) {
   return normalizeText(getTaskTitle(task)).startsWith("revision de guia");
 }
 
+export function taskUsesStore(task) {
+  const title = normalizeText(getTaskTitle(task));
+  const storeTaskNames = [
+    "pedido mayorista",
+    "visita de tienda",
+    "picking",
+    "apoyo tienda",
+    "apoyo a tienda"
+  ];
+  return title.startsWith("revision de guia") ||
+    storeTaskNames.some((taskName) => title === taskName || title.startsWith(`${taskName} `));
+}
+
 export function getActivityCaptureMode(taskName) {
   const name = normalizeText(taskName);
 
