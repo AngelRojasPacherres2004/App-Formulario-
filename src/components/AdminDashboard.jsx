@@ -56,6 +56,16 @@ import {
 
 const roleOptions = ["administrador", "operante", "jefe de equipo", "jefe de grupo", "otros"];
 const taskTypes = ["cantidad", "fijo", "turno", "tiempo"];
+const trainingStatusOptions = [
+  { value: "pendiente", label: "Pendiente" },
+  { value: "en_curso", label: "En curso" },
+  { value: "finalizado", label: "Completado" }
+];
+const trainingStatusRank = { pendiente: 0, en_curso: 1, finalizado: 2 };
+
+function trainingStatusLabel(status) {
+  return trainingStatusOptions.find((option) => option.value === status)?.label || "Pendiente";
+}
 
 export default function AdminDashboard({ section }) {
   if (section === "Usuarios") return <UsersPanel />;
@@ -382,17 +392,16 @@ function WorkerTrainingProfile({ user, onClose }) {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [onClose]);
 
-  async function updateTraining(training) {
+  async function updateTraining(training, estado) {
+    if (!estado || estado === training.estado) return;
     setStatus(null);
     setSavingCourse(training.id_curso);
     try {
-      const updated = await setUserTrainingStatus(user.id, training.id_curso, !training.completado);
+      const updated = await setUserTrainingStatus(user.id, training.id_curso, estado);
       setData(updated);
       setStatus({
         type: "success",
-        message: training.completado
-          ? `${training.id_curso} fue desmarcada correctamente.`
-          : `${training.id_curso} fue marcada como completada.`
+        message: `${training.id_curso} ahora esta ${trainingStatusLabel(estado).toLowerCase()}.`
       });
     } catch (err) {
       setStatus({ type: "error", message: friendlyError(err) });
@@ -449,15 +458,22 @@ function WorkerTrainingProfile({ user, onClose }) {
         {!loading && !error ? (
           <div className="training-roadmap">
             {trainings.map((training) => {
+              const trainingStatus = training.estado || (training.completado ? "finalizado" : "pendiente");
               const locked = !training.disponible;
-              const cannotUnmark = training.completado && !training.puede_desmarcar;
+              const cannotChange = !training.puede_cambiar_estado;
+              const finalized = trainingStatus === "finalizado";
+              const inProgress = trainingStatus === "en_curso";
+              const availableStatusOptions = trainingStatusOptions.map((option) => ({
+                ...option,
+                disabled: cannotChange && trainingStatusRank[option.value] < trainingStatusRank[trainingStatus]
+              }));
               return (
                 <article
                   key={training.id_curso}
-                  className={`training-card ${training.completado ? "completed" : locked ? "locked" : "available"}`}
+                  className={`training-card ${finalized ? "completed" : inProgress ? "in-progress" : locked ? "locked" : "available"}`}
                 >
                   <div className="training-order">
-                    {training.completado ? <CheckCircle2 /> : locked ? <LockKeyhole /> : <span>{training.orden}</span>}
+                    {finalized ? <CheckCircle2 /> : locked ? <LockKeyhole /> : inProgress ? <GraduationCap /> : <span>{training.orden}</span>}
                   </div>
                   <div className="training-content">
                     <div className="training-title-row">
@@ -465,8 +481,8 @@ function WorkerTrainingProfile({ user, onClose }) {
                         <span className="training-code">{training.id_curso}</span>
                         <h3>{training.nombre_curso}</h3>
                       </div>
-                      <span className={`training-state ${training.completado ? "done" : locked ? "blocked" : "ready"}`}>
-                        {training.completado ? "Completada" : locked ? "Bloqueada" : "Disponible"}
+                      <span className={`training-state ${finalized ? "done" : inProgress ? "progress" : locked ? "blocked" : "ready"}`}>
+                        {locked ? "Pendiente · bloqueada" : trainingStatusLabel(trainingStatus)}
                       </span>
                     </div>
                     <div className="training-meta">
@@ -475,23 +491,20 @@ function WorkerTrainingProfile({ user, onClose }) {
                       <span><strong>Duracion:</strong> {training.nro_horas}</span>
                       <span><strong>Inversion:</strong> {training.inversion_curso}</span>
                     </div>
-                    {training.completado && training.completado_en ? (
+                    {finalized && training.completado_en ? (
                       <small>Completada el {formatDateTimeLima(training.completado_en)}</small>
                     ) : null}
                     <div className="training-action">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant={training.completado ? "secondary" : "primary"}
-                        icon={training.completado ? CheckCircle2 : locked ? LockKeyhole : GraduationCap}
-                        loading={savingCourse === training.id_curso}
-                        disabled={Boolean(savingCourse) || locked || cannotUnmark}
-                        onClick={() => updateTraining(training)}
-                      >
-                        {training.completado
-                          ? cannotUnmark ? "Completa cursos posteriores" : "Desmarcar"
-                          : locked ? `Completa primero CAP ${Number(training.orden) - 1}` : "Marcar completada"}
-                      </Button>
+                      <SelectInput
+                        label="Estado"
+                        value={trainingStatus}
+                        options={availableStatusOptions}
+                        disabled={Boolean(savingCourse) || locked}
+                        onChange={(estado) => updateTraining(training, estado)}
+                        hint={locked
+                          ? `Completa primero CAP ${Number(training.orden) - 1}`
+                          : cannotChange ? "Puedes avanzar; no retroceder mientras haya una capacitacion posterior iniciada." : undefined}
+                      />
                     </div>
                   </div>
                 </article>

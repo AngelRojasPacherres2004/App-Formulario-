@@ -91,8 +91,9 @@ export function SelectInput({ label, value, onChange, options, hint, error, ...p
           {options.map((option) => {
             const valueOption = typeof option === "string" ? option : option.value;
             const labelOption = typeof option === "string" ? option : option.label;
+            const disabledOption = typeof option === "string" ? false : Boolean(option.disabled);
             return (
-              <option key={valueOption} value={valueOption}>
+              <option key={valueOption} value={valueOption} disabled={disabledOption}>
                 {labelOption}
               </option>
             );

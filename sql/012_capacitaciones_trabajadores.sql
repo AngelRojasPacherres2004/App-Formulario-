@@ -99,6 +99,7 @@ create table if not exists public.usuario_capacitaciones (
   usuario_id bigint not null references public.usuarios(id) on delete cascade,
   capacitacion_id bigint not null,
   curso_id text not null references public.capacitaciones(id_curso) on delete restrict,
+  estado text not null default 'pendiente',
   completado boolean not null default false,
   completado_en timestamptz,
   completado_por bigint references public.usuarios(id) on delete set null,
@@ -108,11 +109,43 @@ create table if not exists public.usuario_capacitaciones (
     foreign key (capacitacion_id) references public.capacitaciones(id) on delete restrict,
   constraint uq_usuario_capacitacion unique (usuario_id, curso_id),
   constraint uq_usuario_capacitacion_numerica unique (usuario_id, capacitacion_id),
+  constraint capacitacion_estado_valido check (estado in ('pendiente', 'en_curso', 'finalizado')),
+  constraint capacitacion_estado_completado_coherente check (completado = (estado = 'finalizado')),
   constraint capacitacion_fecha_coherente check (
     (completado and completado_en is not null) or
     (not completado and completado_en is null)
   )
 );
+
+create or replace function public.sincronizar_estado_capacitacion()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  new.estado := replace(lower(trim(coalesce(new.estado, 'pendiente'))), ' ', '_');
+
+  if tg_op = 'INSERT' then
+    if new.completado and new.estado = 'pendiente' then
+      new.estado := 'finalizado';
+    else
+      new.completado := new.estado = 'finalizado';
+    end if;
+  elsif new.estado is distinct from old.estado then
+    new.completado := new.estado = 'finalizado';
+  elsif new.completado is distinct from old.completado then
+    new.estado := case when new.completado then 'finalizado' else 'pendiente' end;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_sincronizar_estado_capacitacion on public.usuario_capacitaciones;
+create trigger trg_sincronizar_estado_capacitacion
+before insert or update of estado, completado on public.usuario_capacitaciones
+for each row execute function public.sincronizar_estado_capacitacion();
 
 create or replace function public.sincronizar_referencia_capacitacion()
 returns trigger
@@ -178,13 +211,13 @@ begin
     raise exception 'La capacitacion seleccionada no existe.';
   end if;
 
-  if new.completado then
+  if new.estado in ('en_curso', 'finalizado') then
     select c.id_curso into curso_bloqueante
     from public.capacitaciones c
     left join public.usuario_capacitaciones uc
       on uc.curso_id = c.id_curso
      and uc.usuario_id = new.usuario_id
-     and uc.completado = true
+     and uc.estado = 'finalizado'
     where c.activo = true
       and c.orden < curso_orden
       and uc.id is null
@@ -192,9 +225,11 @@ begin
     limit 1;
 
     if curso_bloqueante is not null then
-      raise exception 'Debes completar % antes de marcar %.', curso_bloqueante, new.curso_id;
+      raise exception 'Debes finalizar % antes de cambiar el estado de %.', curso_bloqueante, new.curso_id;
     end if;
+  end if;
 
+  if new.estado = 'finalizado' then
     new.completado_en = coalesce(new.completado_en, now());
   else
     select c.id_curso into curso_bloqueante
@@ -202,14 +237,14 @@ begin
     join public.usuario_capacitaciones uc
       on uc.curso_id = c.id_curso
      and uc.usuario_id = new.usuario_id
-     and uc.completado = true
+     and uc.estado in ('en_curso', 'finalizado')
     where c.activo = true
       and c.orden > curso_orden
     order by c.orden desc
     limit 1;
 
     if curso_bloqueante is not null then
-      raise exception 'No puedes desmarcar % mientras % siga completada.', new.curso_id, curso_bloqueante;
+      raise exception 'No puedes retroceder % mientras % siga en curso o finalizada.', new.curso_id, curso_bloqueante;
     end if;
 
     new.completado_en = null;
@@ -223,7 +258,7 @@ $$;
 
 drop trigger if exists trg_validar_secuencia_capacitacion on public.usuario_capacitaciones;
 create trigger trg_validar_secuencia_capacitacion
-before insert or update of completado on public.usuario_capacitaciones
+before insert or update of estado, completado on public.usuario_capacitaciones
 for each row execute function public.validar_secuencia_capacitacion();
 
 create index if not exists idx_usuario_capacitaciones_usuario
@@ -234,6 +269,9 @@ create index if not exists idx_usuario_capacitaciones_curso
 
 create index if not exists idx_usuario_capacitaciones_capacitacion
   on public.usuario_capacitaciones(capacitacion_id);
+
+create index if not exists idx_usuario_capacitaciones_estado
+  on public.usuario_capacitaciones(estado);
 
 grant select on public.capacitaciones to anon, authenticated, service_role;
 grant select, insert, update, delete on public.usuario_capacitaciones to service_role;

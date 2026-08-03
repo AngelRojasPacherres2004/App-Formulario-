@@ -36,12 +36,12 @@ const headers = { authorization: `Bearer ${token}`, "content-type": "application
 const baseUrl = process.env.API_BASE_URL || "http://127.0.0.1:5180";
 
 const catalogCheck = await db.from("capacitaciones").select("id,id_curso").order("orden", { ascending: true });
-const progressCheck = await db.from("usuario_capacitaciones").select("id,capacitacion_id").limit(1);
+const progressCheck = await db.from("usuario_capacitaciones").select("id,capacitacion_id,estado").limit(1);
 if (catalogCheck.error || progressCheck.error || (catalogCheck.data || []).length !== 7) {
   const anyUser = await db.from("usuarios").select("id").limit(1).maybeSingle();
   const response = await fetch(`${baseUrl}/api/users/${anyUser.data?.id || 1}/trainings`, { headers });
   const payload = await response.json().catch(() => ({}));
-  const migrationMessagePresent = /01(?:2_capacitaciones_trabajadores|5_usuario_capacitacion_id)\.sql/i.test(payload.error || "");
+  const migrationMessagePresent = /01(?:2_capacitaciones_trabajadores|5_usuario_capacitacion_id|6_estado_capacitaciones)\.sql/i.test(payload.error || "");
   console.log(JSON.stringify({
     ok: response.status === 500 && migrationMessagePresent,
     migration_ready: false,
@@ -63,11 +63,11 @@ if (catalogCheck.error || progressCheck.error || (catalogCheck.data || []).lengt
   });
   if (created.error) throw created.error;
 
-  async function setCourse(courseId, completed) {
+  async function setCourse(courseId, estado) {
     const response = await fetch(`${baseUrl}/api/users/${testUserId}/trainings/${encodeURIComponent(courseId)}`, {
       method: "PUT",
       headers,
-      body: JSON.stringify({ completado: completed })
+      body: JSON.stringify({ estado })
     });
     return { status: response.status, payload: await response.json().catch(() => ({})) };
   }
@@ -77,41 +77,49 @@ if (catalogCheck.error || progressCheck.error || (catalogCheck.data || []).lengt
   try {
     const initial = await fetch(`${baseUrl}/api/users/${testUserId}/trainings`, { headers });
     const initialPayload = await initial.json();
-    const cap2Blocked = await setCourse("CAP 2", true);
-    const cap1Done = await setCourse("CAP 1", true);
-    const cap2Done = await setCourse("CAP 2", true);
-    const cap1UnmarkBlocked = await setCourse("CAP 1", false);
-    const cap2Undone = await setCourse("CAP 2", false);
-    const cap1Undone = await setCourse("CAP 1", false);
+    const cap2Blocked = await setCourse("CAP 2", "en_curso");
+    const cap1Started = await setCourse("CAP 1", "en_curso");
+    const cap1Done = await setCourse("CAP 1", "finalizado");
+    const cap2Started = await setCourse("CAP 2", "en_curso");
+    const cap1RollbackBlocked = await setCourse("CAP 1", "en_curso");
+    const cap2Pending = await setCourse("CAP 2", "pendiente");
+    const cap1Pending = await setCourse("CAP 1", "pendiente");
     const storedProgress = await db
       .from("usuario_capacitaciones")
-      .select("capacitacion_id,curso_id")
+      .select("capacitacion_id,curso_id,estado,completado")
       .eq("usuario_id", testUserId)
       .eq("curso_id", "CAP 1")
       .maybeSingle();
     const cap1Catalog = (catalogCheck.data || []).find((course) => course.id_curso === "CAP 1");
     const numericIdStored = !storedProgress.error &&
       Number(storedProgress.data?.capacitacion_id) === Number(cap1Catalog?.id);
+    const numericIdVisible = Number(initialPayload.trainings?.[0]?.capacitacion_id) === Number(cap1Catalog?.id);
 
     const ok = initial.status === 200 &&
       initialPayload.trainings?.length === 7 &&
       initialPayload.trainings?.[0]?.disponible === true &&
       initialPayload.trainings?.slice(1).every((course) => course.disponible === false) &&
       cap2Blocked.status === 409 &&
+      cap1Started.status === 200 &&
       cap1Done.status === 200 &&
-      cap2Done.status === 200 &&
-      cap1UnmarkBlocked.status === 409 &&
-      cap2Undone.status === 200 &&
-      cap1Undone.status === 200 &&
-      numericIdStored;
+      cap2Started.status === 200 &&
+      cap1RollbackBlocked.status === 409 &&
+      cap2Pending.status === 200 &&
+      cap1Pending.status === 200 &&
+      storedProgress.data?.estado === "pendiente" &&
+      storedProgress.data?.completado === false &&
+      numericIdStored &&
+      numericIdVisible;
 
     result = {
       ok,
       migration_ready: true,
       courses: initialPayload.trainings?.length || 0,
       numeric_training_id_stored: numericIdStored,
+      numeric_training_id_visible: numericIdVisible,
       forward_order_blocked: cap2Blocked.status === 409,
-      reverse_order_blocked: cap1UnmarkBlocked.status === 409,
+      in_progress_saved: cap1Started.status === 200 && cap2Started.status === 200,
+      reverse_order_blocked: cap1RollbackBlocked.status === 409,
       cleanup_pending: true
     };
     if (!ok) resultExitCode = 3;

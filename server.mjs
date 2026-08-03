@@ -598,6 +598,17 @@ async function handleDeleteUser(_request, response, userId) {
   }
 }
 
+const trainingStates = new Set(["pendiente", "en_curso", "finalizado"]);
+
+function normalizeTrainingState(value) {
+  const normalized = String(value || "").trim().toLowerCase().replace(/\s+/g, "_");
+  return trainingStates.has(normalized) ? normalized : "";
+}
+
+function trainingStateFromProgress(progress) {
+  return normalizeTrainingState(progress?.estado) || (progress?.completado ? "finalizado" : "pendiente");
+}
+
 async function selectUserTrainingProfile(userId) {
   const [userResult, coursesResult, progressResult] = await Promise.all([
     supabase
@@ -612,13 +623,17 @@ async function selectUserTrainingProfile(userId) {
       .order("orden", { ascending: true }),
     supabase
       .from("usuario_capacitaciones")
-      .select("capacitacion_id,curso_id,completado,completado_en,completado_por")
+      .select("capacitacion_id,curso_id,estado,completado,completado_en,completado_por")
       .eq("usuario_id", userId)
   ]);
 
   if (userResult.error) throw userResult.error;
   if (!userResult.data) throw new Error("Usuario no encontrado.");
   if (coursesResult.error || progressResult.error) {
+    const missingState = [coursesResult.error, progressResult.error]
+      .filter(Boolean)
+      .some((error) => /\bestado\b/i.test(error.message || ""));
+    if (missingState) throw new Error("Falta aplicar la migracion sql/016_estado_capacitaciones.sql en Supabase.");
     const missingNumericId = [coursesResult.error, progressResult.error]
       .filter(Boolean)
       .some((error) => /capacitacion_id/i.test(error.message || ""));
@@ -634,31 +649,37 @@ async function selectUserTrainingProfile(userId) {
   const progressByCourse = new Map((progressResult.data || []).map((item) => [item.curso_id, item]));
   const trainings = courses.map((course) => {
     const progress = progressByCourse.get(course.id_curso);
-    const completed = Boolean(progress?.completado);
-    const earlierCompleted = courses
+    const estado = trainingStateFromProgress(progress);
+    const completed = estado === "finalizado";
+    const earlierFinalized = courses
       .filter((candidate) => Number(candidate.orden) < Number(course.orden))
-      .every((candidate) => Boolean(progressByCourse.get(candidate.id_curso)?.completado));
-    const laterCompleted = courses
+      .every((candidate) => trainingStateFromProgress(progressByCourse.get(candidate.id_curso)) === "finalizado");
+    const laterStarted = courses
       .filter((candidate) => Number(candidate.orden) > Number(course.orden))
-      .some((candidate) => Boolean(progressByCourse.get(candidate.id_curso)?.completado));
+      .some((candidate) => trainingStateFromProgress(progressByCourse.get(candidate.id_curso)) !== "pendiente");
 
     return {
       ...course,
       capacitacion_id: Number(course.id),
+      estado,
       completado: completed,
       completado_en: progress?.completado_en || null,
       completado_por: progress?.completado_por || null,
-      disponible: completed || earlierCompleted,
-      puede_desmarcar: completed && !laterCompleted
+      disponible: earlierFinalized,
+      puede_cambiar_estado: !laterStarted,
+      puede_desmarcar: completed && !laterStarted
     };
   });
   const completedCount = trainings.filter((course) => course.completado).length;
+  const inProgressCount = trainings.filter((course) => course.estado === "en_curso").length;
 
   return {
     user: userResult.data,
     trainings,
     summary: {
       completed: completedCount,
+      in_progress: inProgressCount,
+      pending: trainings.length - completedCount - inProgressCount,
       total: trainings.length,
       percent: trainings.length ? Math.round((completedCount / trainings.length) * 100) : 0,
       next_course_id: trainings.find((course) => !course.completado && course.disponible)?.id_curso || null
@@ -690,8 +711,10 @@ async function handleUpdateUserTraining(request, response, userId, courseId) {
       return;
     }
     const body = JSON.parse((await readBody(request)) || "{}");
-    if (typeof body.completado !== "boolean") {
-      sendJson(response, 400, { error: "Indica si la capacitacion esta completada." });
+    const requestedState = normalizeTrainingState(body.estado) ||
+      (typeof body.completado === "boolean" ? (body.completado ? "finalizado" : "pendiente") : "");
+    if (!requestedState) {
+      sendJson(response, 400, { error: "El estado debe ser pendiente, en_curso o finalizado." });
       return;
     }
 
@@ -699,7 +722,7 @@ async function handleUpdateUserTraining(request, response, userId, courseId) {
       supabase.from("usuarios").select("id").eq("id", userId).maybeSingle(),
       supabase.from("capacitaciones").select("id,id_curso,orden").eq("id_curso", courseId).eq("activo", true).maybeSingle(),
       supabase.from("capacitaciones").select("id,id_curso,orden").eq("activo", true).order("orden", { ascending: true }),
-      supabase.from("usuario_capacitaciones").select("capacitacion_id,curso_id,completado").eq("usuario_id", userId)
+      supabase.from("usuario_capacitaciones").select("capacitacion_id,curso_id,estado,completado").eq("usuario_id", userId)
     ]);
     const firstError = [userResult.error, courseResult.error, coursesResult.error, progressResult.error].find(Boolean);
     if (firstError) throw firstError;
@@ -712,35 +735,46 @@ async function handleUpdateUserTraining(request, response, userId, courseId) {
       return;
     }
 
-    const completedIds = new Set(
-      (progressResult.data || []).filter((item) => item.completado).map((item) => item.curso_id)
+    const stateByCourse = new Map(
+      (progressResult.data || []).map((item) => [item.curso_id, trainingStateFromProgress(item)])
+    );
+    const finalizedIds = new Set(
+      [...stateByCourse].filter(([, state]) => state === "finalizado").map(([id]) => id)
+    );
+    const startedIds = new Set(
+      [...stateByCourse].filter(([, state]) => state !== "pendiente").map(([id]) => id)
     );
     const currentOrder = Number(courseResult.data.orden);
-    if (body.completado) {
+    const currentState = stateByCourse.get(courseId) || "pendiente";
+    const stateRank = { pendiente: 0, en_curso: 1, finalizado: 2 };
+    if (requestedState !== "pendiente") {
       const missingPrevious = (coursesResult.data || []).find(
-        (course) => Number(course.orden) < currentOrder && !completedIds.has(course.id_curso)
+        (course) => Number(course.orden) < currentOrder && !finalizedIds.has(course.id_curso)
       );
       if (missingPrevious) {
-        sendJson(response, 409, { error: `Debes completar ${missingPrevious.id_curso} antes de marcar ${courseId}.` });
+        sendJson(response, 409, { error: `Debes finalizar ${missingPrevious.id_curso} antes de cambiar el estado de ${courseId}.` });
         return;
       }
-    } else {
-      const completedLater = (coursesResult.data || []).find(
-        (course) => Number(course.orden) > currentOrder && completedIds.has(course.id_curso)
+    }
+    if (stateRank[requestedState] < stateRank[currentState]) {
+      const startedLater = (coursesResult.data || []).find(
+        (course) => Number(course.orden) > currentOrder && startedIds.has(course.id_curso)
       );
-      if (completedLater) {
-        sendJson(response, 409, { error: `No puedes desmarcar ${courseId} mientras ${completedLater.id_curso} siga completada.` });
+      if (startedLater) {
+        sendJson(response, 409, { error: `No puedes retroceder ${courseId} mientras ${startedLater.id_curso} siga en curso o finalizada.` });
         return;
       }
     }
 
+    const completed = requestedState === "finalizado";
     const progressPayload = {
       usuario_id: userId,
       capacitacion_id: Number(courseResult.data.id),
       curso_id: courseId,
-      completado: body.completado,
-      completado_en: body.completado ? new Date().toISOString() : null,
-      completado_por: body.completado ? Number(session.id) : null
+      estado: requestedState,
+      completado: completed,
+      completado_en: completed ? new Date().toISOString() : null,
+      completado_por: completed ? Number(session.id) : null
     };
     const result = await supabase
       .from("usuario_capacitaciones")
@@ -750,10 +784,12 @@ async function handleUpdateUserTraining(request, response, userId, courseId) {
     sendJson(response, 200, await selectUserTrainingProfile(userId));
   } catch (error) {
     const rawMessage = error.message || "No se pudo actualizar la capacitacion.";
-    const message = /capacitacion_id/i.test(rawMessage)
-      ? "Falta aplicar la migracion sql/015_usuario_capacitacion_id.sql en Supabase."
-      : rawMessage;
-    sendJson(response, /debes completar|no puedes desmarcar/i.test(message) ? 409 : 500, { error: message });
+    const message = /\bestado\b/i.test(rawMessage)
+      ? "Falta aplicar la migracion sql/016_estado_capacitaciones.sql en Supabase."
+      : /capacitacion_id/i.test(rawMessage)
+        ? "Falta aplicar la migracion sql/015_usuario_capacitacion_id.sql en Supabase."
+        : rawMessage;
+    sendJson(response, /debes (?:completar|finalizar)|no puedes (?:desmarcar|retroceder)/i.test(message) ? 409 : 500, { error: message });
   }
 }
 

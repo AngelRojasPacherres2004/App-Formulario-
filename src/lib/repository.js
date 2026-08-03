@@ -276,12 +276,13 @@ export async function getUserTrainingProfile(userId) {
   return apiResult;
 }
 
-export async function setUserTrainingStatus(userId, courseId, completed) {
+export async function setUserTrainingStatus(userId, courseId, status) {
+  const estado = typeof status === "boolean" ? (status ? "finalizado" : "pendiente") : String(status || "");
   const apiResult = await requestLocalApi(
     `/api/users/${encodeURIComponent(userId)}/trainings/${encodeURIComponent(courseId)}`,
     {
       method: "PUT",
-      body: JSON.stringify({ completado: Boolean(completed) })
+      body: JSON.stringify({ estado })
     }
   );
   if (!apiResult?.user || !Array.isArray(apiResult.trainings)) {

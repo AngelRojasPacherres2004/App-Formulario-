@@ -19,24 +19,28 @@ const db = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
 });
 
 async function migrationState() {
-  const [courses, progress, numericProgress] = await Promise.all([
+  const [courses, progress, numericProgress, stateProgress] = await Promise.all([
     db.from("capacitaciones").select("id_curso,orden").order("orden", { ascending: true }),
     db.from("usuario_capacitaciones").select("id").limit(1),
-    db.from("usuario_capacitaciones").select("id,capacitacion_id").limit(1)
+    db.from("usuario_capacitaciones").select("id,capacitacion_id").limit(1),
+    db.from("usuario_capacitaciones").select("id,estado").limit(1)
   ]);
   const baseReady = !courses.error && !progress.error && (courses.data || []).length === 7;
-  return { baseReady, numericIdReady: baseReady && !numericProgress.error };
+  const numericIdReady = baseReady && !numericProgress.error;
+  return { baseReady, numericIdReady, stateReady: numericIdReady && !stateProgress.error };
 }
 
 const initialState = await migrationState();
-if (initialState.numericIdReady) {
+if (initialState.stateReady) {
   console.log(JSON.stringify({ ok: true, already_applied: true, courses: 7 }, null, 2));
   process.exit(0);
 }
 
-const migrationFiles = initialState.baseReady
-  ? ["sql/015_usuario_capacitacion_id.sql"]
-  : ["sql/012_capacitaciones_trabajadores.sql", "sql/015_usuario_capacitacion_id.sql"];
+const migrationFiles = !initialState.baseReady
+  ? ["sql/012_capacitaciones_trabajadores.sql", "sql/015_usuario_capacitacion_id.sql", "sql/016_estado_capacitaciones.sql"]
+  : !initialState.numericIdReady
+    ? ["sql/015_usuario_capacitacion_id.sql", "sql/016_estado_capacitaciones.sql"]
+    : ["sql/016_estado_capacitaciones.sql"];
 const sql = migrationFiles.map((file) => fs.readFileSync(file, "utf8")).join("\n\n");
 const attempts = [
   ["exec_sql", { query: sql }],
@@ -50,7 +54,7 @@ const attempts = [
 const errors = [];
 for (const [functionName, payload] of attempts) {
   const result = await db.rpc(functionName, payload);
-  if (!result.error && (await migrationState()).numericIdReady) {
+  if (!result.error && (await migrationState()).stateReady) {
     console.log(JSON.stringify({ ok: true, applied_with_rpc: functionName, courses: 7 }, null, 2));
     process.exit(0);
   }
