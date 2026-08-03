@@ -179,17 +179,27 @@ function normalizeRole(role) {
   return value === "trabajador" ? "operante" : value;
 }
 
+function normalizeTaskName(value) {
+  return normalizeRole(value).replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function isEtiquetadoTask(task) {
+  return normalizeTaskName(taskTitle(task)) === "etiquetado";
+}
+
+function isGuideBreakdownTask(task) {
+  return new Set([
+    "revision de guia devolucion",
+    "revision de guia despacho"
+  ]).has(normalizeTaskName(taskTitle(task)));
+}
+
 function isActive(value) {
   return !["false", "0", "no"].includes(String(value ?? true).trim().toLowerCase());
 }
 
 function taskTitle(task) {
   return String(task?.nombre || task?.titulo || "");
-}
-
-function isPairUnit(value) {
-  const words = normalizeRole(value).split(/\s+/).filter(Boolean);
-  return words.includes("par") || words.includes("pares");
 }
 
 function taskUsesStore(task) {
@@ -268,9 +278,10 @@ function normalizeActivityLog(row) {
   if ("observacion" in normalized && !("detalle" in normalized)) {
     normalized.detalle = normalized.observacion;
   }
-  if ("dato_extra" in normalized && !("tiempo_minutos" in normalized)) {
+  if ("dato_extra" in normalized && normalized.dato_extra !== null && String(normalized.dato_extra).trim() !== "") {
     const parsed = Number(normalized.dato_extra);
-    normalized.tiempo_minutos = Number.isNaN(parsed) ? normalized.dato_extra : parsed;
+    if (Number.isNaN(parsed)) normalized.lote = normalized.lote || normalized.dato_extra;
+    else if (normalized.tiempo_minutos === null || normalized.tiempo_minutos === undefined) normalized.tiempo_minutos = parsed;
   }
   if ("tarea" in normalized && !("actividad_nombre" in normalized)) {
     normalized.actividad_nombre = normalized.tarea;
@@ -279,21 +290,29 @@ function normalizeActivityLog(row) {
 }
 
 function taskPayloadForDb(body, tableName) {
+  const taskName = body.nombre ?? body.titulo;
   const unit = body.unidad_medida ?? body.unidad_base;
-  const requiresBrand = isPairUnit(unit) ? true : body.requiere_marca;
+  const automaticFields = {
+    requiere_marca: normalizeTaskName(taskName) === "etiquetado",
+    requiere_lote: normalizeTaskName(taskName) === "etiquetado",
+    requiere_numero_guia: new Set([
+      "revision de guia devolucion",
+      "revision de guia despacho"
+    ]).has(normalizeTaskName(taskName))
+  };
   const payload = tableName === "tarea"
     ? {
-        nombre: body.nombre ?? body.titulo,
+        nombre: taskName,
         activo: body.activo,
         unidad_medida: unit,
         tipo_tarea: body.tipo_tarea,
-        requiere_marca: requiresBrand,
+        requiere_marca: automaticFields.requiere_marca,
         requiere_tiempo: body.requiere_tiempo,
-        requiere_lote: body.requiere_lote,
-        requiere_numero_guia: body.requiere_numero_guia
+        requiere_lote: automaticFields.requiere_lote,
+        requiere_numero_guia: automaticFields.requiere_numero_guia
       }
     : {
-        nombre: body.nombre ?? body.titulo,
+        nombre: taskName,
         tipo_medicion: body.tipo_medicion,
         activo: body.activo,
         requiere_dato_extra: body.requiere_dato_extra,
@@ -302,7 +321,7 @@ function taskPayloadForDb(body, tableName) {
         puntos_turno_simple: body.puntos_turno_simple ?? body.puntaje_turno_simple,
         puntos_turno_completo: body.puntos_turno_completo ?? body.puntaje_turno_completo,
         tipo_tarea: body.tipo_tarea,
-        requiere_marca: requiresBrand
+        requiere_marca: automaticFields.requiere_marca
       };
 
   if (payload.activo === undefined && body.estado !== undefined) {
@@ -579,6 +598,156 @@ async function handleDeleteUser(_request, response, userId) {
   }
 }
 
+async function selectUserTrainingProfile(userId) {
+  const [userResult, coursesResult, progressResult] = await Promise.all([
+    supabase
+      .from("usuarios")
+      .select("id,nombre,email,rol,activo,fecha_cumpleanos,created_at")
+      .eq("id", userId)
+      .maybeSingle(),
+    supabase
+      .from("capacitaciones")
+      .select("id_curso,orden,nombre_curso,competencias,nro_horas,inversion_curso,activo")
+      .eq("activo", true)
+      .order("orden", { ascending: true }),
+    supabase
+      .from("usuario_capacitaciones")
+      .select("curso_id,completado,completado_en,completado_por")
+      .eq("usuario_id", userId)
+  ]);
+
+  if (userResult.error) throw userResult.error;
+  if (!userResult.data) throw new Error("Usuario no encontrado.");
+  if (coursesResult.error || progressResult.error) {
+    const migrationMissing = [coursesResult.error, progressResult.error]
+      .filter(Boolean)
+      .some((error) => /capacitaciones|schema cache|does not exist/i.test(error.message || ""));
+    if (migrationMissing) throw new Error("Falta aplicar la migracion sql/012_capacitaciones_trabajadores.sql en Supabase.");
+    throw coursesResult.error || progressResult.error;
+  }
+
+  const courses = coursesResult.data || [];
+  const progressByCourse = new Map((progressResult.data || []).map((item) => [item.curso_id, item]));
+  const trainings = courses.map((course) => {
+    const progress = progressByCourse.get(course.id_curso);
+    const completed = Boolean(progress?.completado);
+    const earlierCompleted = courses
+      .filter((candidate) => Number(candidate.orden) < Number(course.orden))
+      .every((candidate) => Boolean(progressByCourse.get(candidate.id_curso)?.completado));
+    const laterCompleted = courses
+      .filter((candidate) => Number(candidate.orden) > Number(course.orden))
+      .some((candidate) => Boolean(progressByCourse.get(candidate.id_curso)?.completado));
+
+    return {
+      ...course,
+      completado: completed,
+      completado_en: progress?.completado_en || null,
+      completado_por: progress?.completado_por || null,
+      disponible: completed || earlierCompleted,
+      puede_desmarcar: completed && !laterCompleted
+    };
+  });
+  const completedCount = trainings.filter((course) => course.completado).length;
+
+  return {
+    user: userResult.data,
+    trainings,
+    summary: {
+      completed: completedCount,
+      total: trainings.length,
+      percent: trainings.length ? Math.round((completedCount / trainings.length) * 100) : 0,
+      next_course_id: trainings.find((course) => !course.completado && course.disponible)?.id_curso || null
+    }
+  };
+}
+
+async function handleReadUserTrainingProfile(request, response, userId) {
+  try {
+    if (!requireAdministrator(request, response)) return;
+    if (!Number.isInteger(userId) || userId <= 0) {
+      sendJson(response, 400, { error: "Usuario invalido." });
+      return;
+    }
+    sendJson(response, 200, await selectUserTrainingProfile(userId));
+  } catch (error) {
+    sendJson(response, /no encontrado/i.test(error.message || "") ? 404 : 500, {
+      error: error.message || "No se pudo cargar el perfil de capacitaciones."
+    });
+  }
+}
+
+async function handleUpdateUserTraining(request, response, userId, courseId) {
+  try {
+    const session = requireSessionRole(request, response, ["administrador"]);
+    if (!session) return;
+    if (!Number.isInteger(userId) || userId <= 0 || !courseId) {
+      sendJson(response, 400, { error: "Usuario o curso invalido." });
+      return;
+    }
+    const body = JSON.parse((await readBody(request)) || "{}");
+    if (typeof body.completado !== "boolean") {
+      sendJson(response, 400, { error: "Indica si la capacitacion esta completada." });
+      return;
+    }
+
+    const [userResult, courseResult, coursesResult, progressResult] = await Promise.all([
+      supabase.from("usuarios").select("id").eq("id", userId).maybeSingle(),
+      supabase.from("capacitaciones").select("id_curso,orden").eq("id_curso", courseId).eq("activo", true).maybeSingle(),
+      supabase.from("capacitaciones").select("id_curso,orden").eq("activo", true).order("orden", { ascending: true }),
+      supabase.from("usuario_capacitaciones").select("curso_id,completado").eq("usuario_id", userId)
+    ]);
+    const firstError = [userResult.error, courseResult.error, coursesResult.error, progressResult.error].find(Boolean);
+    if (firstError) throw firstError;
+    if (!userResult.data) {
+      sendJson(response, 404, { error: "Usuario no encontrado." });
+      return;
+    }
+    if (!courseResult.data) {
+      sendJson(response, 404, { error: "Capacitacion no encontrada." });
+      return;
+    }
+
+    const completedIds = new Set(
+      (progressResult.data || []).filter((item) => item.completado).map((item) => item.curso_id)
+    );
+    const currentOrder = Number(courseResult.data.orden);
+    if (body.completado) {
+      const missingPrevious = (coursesResult.data || []).find(
+        (course) => Number(course.orden) < currentOrder && !completedIds.has(course.id_curso)
+      );
+      if (missingPrevious) {
+        sendJson(response, 409, { error: `Debes completar ${missingPrevious.id_curso} antes de marcar ${courseId}.` });
+        return;
+      }
+    } else {
+      const completedLater = (coursesResult.data || []).find(
+        (course) => Number(course.orden) > currentOrder && completedIds.has(course.id_curso)
+      );
+      if (completedLater) {
+        sendJson(response, 409, { error: `No puedes desmarcar ${courseId} mientras ${completedLater.id_curso} siga completada.` });
+        return;
+      }
+    }
+
+    const progressPayload = {
+      usuario_id: userId,
+      curso_id: courseId,
+      completado: body.completado,
+      completado_en: body.completado ? new Date().toISOString() : null,
+      completado_por: body.completado ? Number(session.id) : null
+    };
+    const result = await supabase
+      .from("usuario_capacitaciones")
+      .upsert(progressPayload, { onConflict: "usuario_id,curso_id" });
+    if (result.error) throw result.error;
+
+    sendJson(response, 200, await selectUserTrainingProfile(userId));
+  } catch (error) {
+    const message = error.message || "No se pudo actualizar la capacitacion.";
+    sendJson(response, /debes completar|no puedes desmarcar/i.test(message) ? 409 : 500, { error: message });
+  }
+}
+
 async function selectTasks() {
   const tableName = await getTaskTableName();
   const result = await supabase.from(tableName).select("*").order("id", { ascending: true });
@@ -600,11 +769,7 @@ function isGroupLeaderTimeTask(task) {
     "picking",
     "embalado y rotulado de guia"
   ]);
-  return timeTasks.has(normalizeRole(taskTitle(task)));
-}
-
-function isGuideBreakdownTask(task) {
-  return normalizeRole(taskTitle(task)).startsWith("revision de guia");
+  return timeTasks.has(normalizeTaskName(taskTitle(task)));
 }
 
 function normalizedBrandItems(value) {
@@ -1104,13 +1269,26 @@ async function handleCreateActivityLog(request, response) {
       !["fijo", "turno", "cumplimiento"].includes(requestedType);
     const isTimeTask = isGroupLeaderTimeTask(taskResult.data);
     const requiresStore = taskUsesStore(taskResult.data);
+    const allowsBrands = isEtiquetadoTask(taskResult.data);
+    const allowsGuideNumber = isGuideBreakdownTask(taskResult.data);
+    const allowsLote = isEtiquetadoTask(taskResult.data);
     if (isTimeTask && body.tiempo_minutos !== null && body.tiempo_minutos !== undefined && body.tiempo_minutos !== "") {
       sendJson(response, 403, { error: "El operante no puede registrar el tiempo. Debe hacerlo el jefe de equipo." });
       return;
     }
     const brandItems = normalizedBrandItems(body.marcas);
     const guideItems = normalizedGuideItems(body.guias);
-    if (guideItems.length && !isGuideBreakdownTask(taskResult.data)) {
+    const singleGuideNumber = String(body.numero_guia || "").trim();
+    const lote = String(body.lote || "").trim().toUpperCase();
+    if (brandItems.length && !allowsBrands) {
+      sendJson(response, 400, { error: "Las marcas solo estan disponibles para la tarea Etiquetado." });
+      return;
+    }
+    if (lote && !allowsLote) {
+      sendJson(response, 400, { error: "El lote solo esta disponible para la tarea Etiquetado." });
+      return;
+    }
+    if ((guideItems.length || singleGuideNumber) && !allowsGuideNumber) {
       sendJson(response, 400, { error: "La distribución por guías solo está disponible para Revisión de Guía." });
       return;
     }
@@ -1141,7 +1319,8 @@ async function handleCreateActivityLog(request, response) {
       turno: body.turno ? String(body.turno).trim() : null,
       cumplimiento: body.cumplimiento === undefined ? null : Boolean(body.cumplimiento),
       tienda_id: requiresStore ? nullableNumber(body.tienda_id) : null,
-      numero_guia: body.numero_guia ? String(body.numero_guia).trim() : null,
+      numero_guia: singleGuideNumber || null,
+      dato_extra: lote || null,
       observacion: body.observacion || body.detalle ? String(body.observacion || body.detalle).trim() : null,
       puntos_obtenidos: nullableNumber(body.puntos_obtenidos) ?? 0
     };
@@ -1329,6 +1508,16 @@ async function handleCreateGroupLeaderRecord(request, response) {
       sendJson(response, 400, { error: "El tiempo debe ser una cantidad entera de minutos mayor a cero." });
       return;
     }
+    const guideNumber = String(body.codigo_guia || "").trim();
+    const lote = String(body.lote || "").trim().toUpperCase();
+    if (guideNumber && !isGuideBreakdownTask(taskResult.data)) {
+      sendJson(response, 400, { error: "El numero de guia solo esta disponible para Revision de Guia (Devolucion) y Revision de Guia (Despacho)." });
+      return;
+    }
+    if (lote && !isEtiquetadoTask(taskResult.data)) {
+      sendJson(response, 400, { error: "El lote solo esta disponible para la tarea Etiquetado." });
+      return;
+    }
     const payload = {
       encargado_id: Number(session.id),
       trabajador_id: workerId,
@@ -1336,8 +1525,8 @@ async function handleCreateGroupLeaderRecord(request, response) {
       fecha_registro: body.fecha_registro ? String(body.fecha_registro) : new Date().toISOString().slice(0, 10),
       cantidad: requestedQuantity,
       tiempo_minutos: requestedMinutes,
-      numero_guia: body.codigo_guia ? String(body.codigo_guia).trim() : null,
-      lote: body.lote ? String(body.lote).trim().toUpperCase() : null,
+      numero_guia: guideNumber || null,
+      lote: lote || null,
       observacion: body.detalle ? String(body.detalle).trim() : null
     };
 
@@ -1542,6 +1731,26 @@ function serveStatic(request, response) {
 export async function handleRequest(request, response, { serveFiles = true } = {}) {
   if (request.method === "OPTIONS") {
     sendJson(response, 204, {});
+    return;
+  }
+
+  const apiUrl = new URL(request.url, `http://${request.headers.host}`);
+  const apiPath = decodeURIComponent(apiUrl.pathname);
+  const trainingProfileMatch = apiPath.match(/^\/api\/users\/(\d+)\/trainings\/?$/);
+  const trainingCourseMatch = apiPath.match(/^\/api\/users\/(\d+)\/trainings\/(CAP\s+\d+)\/?$/i);
+
+  if (trainingProfileMatch && request.method === "GET") {
+    await handleReadUserTrainingProfile(request, response, Number(trainingProfileMatch[1]));
+    return;
+  }
+
+  if (trainingCourseMatch && request.method === "PUT") {
+    await handleUpdateUserTraining(
+      request,
+      response,
+      Number(trainingCourseMatch[1]),
+      trainingCourseMatch[2].toUpperCase().replace(/\s+/g, " ")
+    );
     return;
   }
 

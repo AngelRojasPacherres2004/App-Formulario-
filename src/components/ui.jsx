@@ -148,7 +148,7 @@ export function Alert({ type = "info", children }) {
   );
 }
 
-export function DataTable({ rows, columns, empty = "Sin registros", compact = false }) {
+export function DataTable({ rows, columns, empty = "Sin registros", compact = false, onRowClick }) {
   const normalizedRows = rows || [];
   const normalizedColumns =
     columns || Array.from(new Set(normalizedRows.flatMap((row) => Object.keys(row || {}))));
@@ -167,7 +167,19 @@ export function DataTable({ rows, columns, empty = "Sin registros", compact = fa
         </thead>
         <tbody>
           {normalizedRows.map((row, rowIndex) => (
-            <tr key={row.id ?? rowIndex}>
+            <tr
+              key={row.id ?? rowIndex}
+              className={onRowClick ? "table-row-action" : ""}
+              role={onRowClick ? "button" : undefined}
+              tabIndex={onRowClick ? 0 : undefined}
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
+              onKeyDown={onRowClick ? (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onRowClick(row);
+                }
+              } : undefined}
+            >
               {normalizedColumns.map((column) => (
                 <td key={column}>{formatCell(row[column])}</td>
               ))}

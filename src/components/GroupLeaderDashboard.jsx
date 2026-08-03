@@ -24,7 +24,9 @@ import {
   getTaskTitle,
   isGroupLeaderTimeTask,
   normalizeMeasurementType,
-  normalizeText
+  normalizeText,
+  taskUsesGuideBreakdown,
+  taskUsesLote
 } from "../lib/scoring";
 import { useAsyncData } from "../lib/hooks";
 import { Alert, Button, CheckboxInput, DataTable, LoadingBlock, Panel, SelectInput, Tabs, TextArea, TextInput } from "./ui";
@@ -353,6 +355,8 @@ function GroupTimeDashboard({ user }) {
     if (!selectedWorker) return "Selecciona un operante.";
     if (!selectedTask) return "Selecciona una tarea.";
     if (!isGroupLeaderTimeTask(selectedTask)) return "Esta tarea no pertenece al registro por tiempo.";
+    if (form.usaCodigoGuia && !taskUsesGuideBreakdown(selectedTask)) return "Esta tarea no permite numero de guia.";
+    if (form.usaLote && !taskUsesLote(selectedTask)) return "Esta tarea no permite lote.";
     if (taskMode.requiresQuantity && (!form.cantidad || Number(form.cantidad) <= 0)) {
       return "Ingresa una cantidad mayor a cero.";
     }
@@ -398,8 +402,8 @@ function GroupTimeDashboard({ user }) {
         fecha_registro: todayLimaISO(),
         cantidad: Number(form.cantidad),
         tiempo_minutos: totalMinutes,
-        codigo_guia: form.usaCodigoGuia ? form.codigo_guia.trim() : null,
-        lote: form.usaLote ? form.lote.trim().toUpperCase() : null,
+        codigo_guia: taskUsesGuideBreakdown(selectedTask) && form.usaCodigoGuia ? form.codigo_guia.trim() : null,
+        lote: taskUsesLote(selectedTask) && form.usaLote ? form.lote.trim().toUpperCase() : null,
         detalle: form.detalle.trim() || null
       };
 
@@ -478,7 +482,7 @@ function GroupTimeDashboard({ user }) {
               ]}
             />
 
-            {selectedTask ? <DynamicGroupFields mode={taskMode} form={form} updateForm={updateForm} /> : null}
+            {selectedTask ? <DynamicGroupFields mode={taskMode} task={selectedTask} form={form} updateForm={updateForm} /> : null}
 
             <TextArea
               label="Detalle"
@@ -580,7 +584,7 @@ function GroupTimeDashboard({ user }) {
   );
 }
 
-function DynamicGroupFields({ mode, form, updateForm }) {
+function DynamicGroupFields({ mode, task, form, updateForm }) {
   if (mode.completedOnly) {
     return (
       <div className="form-span">
@@ -622,27 +626,33 @@ function DynamicGroupFields({ mode, form, updateForm }) {
           />
         </>
       ) : null}
-      <CheckboxInput
-        label="Añadir número de guía"
-        checked={form.usaCodigoGuia}
-        onChange={(usaCodigoGuia) => updateForm({ usaCodigoGuia, codigo_guia: usaCodigoGuia ? form.codigo_guia : "" })}
-        hint="Actívalo solamente cuando este registro tenga una guía."
-      />
-      {form.usaCodigoGuia ? (
-        <TextInput
-          label="Número de guía"
-          value={form.codigo_guia}
-          onChange={(codigo_guia) => updateForm({ codigo_guia })}
-          placeholder="Ej. GUIA-001"
+      {taskUsesGuideBreakdown(task) ? (
+        <>
+          <CheckboxInput
+            label="Añadir número de guía"
+            checked={form.usaCodigoGuia}
+            onChange={(usaCodigoGuia) => updateForm({ usaCodigoGuia, codigo_guia: usaCodigoGuia ? form.codigo_guia : "" })}
+            hint="Disponible solo para las dos tareas de Revisión de Guía."
+          />
+          {form.usaCodigoGuia ? (
+            <TextInput
+              label="Número de guía"
+              value={form.codigo_guia}
+              onChange={(codigo_guia) => updateForm({ codigo_guia })}
+              placeholder="Ej. GUIA-001"
+            />
+          ) : null}
+        </>
+      ) : null}
+      {taskUsesLote(task) ? (
+        <CheckboxInput
+          label="Añadir código de lote"
+          checked={form.usaLote}
+          onChange={(usaLote) => updateForm({ usaLote, lote: usaLote ? form.lote : "" })}
+          hint="Disponible solo para Etiquetado."
         />
       ) : null}
-      <CheckboxInput
-        label="Añadir código de lote"
-        checked={form.usaLote}
-        onChange={(usaLote) => updateForm({ usaLote, lote: usaLote ? form.lote : "" })}
-        hint="Actívalo solamente cuando este registro pertenezca a un lote."
-      />
-      {form.usaLote ? (
+      {taskUsesLote(task) && form.usaLote ? (
         <TextInput
           label="Código de lote"
           value={form.lote}
@@ -677,9 +687,9 @@ function resolveGroupTaskMode(task) {
       mode: "tiempo",
       label: "Cantidad y tiempo",
       requiresQuantity: true,
-      requiresGuideCode: false,
+      requiresGuideCode: taskUsesGuideBreakdown(task),
       requiresTime: true,
-      requiresLote: false,
+      requiresLote: taskUsesLote(task),
       completedOnly: false
     };
   }

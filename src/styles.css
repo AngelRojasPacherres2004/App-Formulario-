@@ -821,6 +821,15 @@ tbody tr:hover {
   background: rgba(45, 212, 191, 0.075);
 }
 
+.table-row-action {
+  cursor: pointer;
+}
+
+.table-row-action:focus-visible {
+  outline: 3px solid rgba(45, 212, 191, 0.3);
+  outline-offset: -3px;
+}
+
 .compact table {
   min-width: 860px;
 }
@@ -1136,6 +1145,274 @@ tbody tr:hover {
 .danger-zone p {
   margin-bottom: 0;
   color: var(--text);
+}
+
+.worker-profile-overlay {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  padding: 1.25rem;
+  place-items: center;
+  background: rgba(2, 7, 6, 0.82);
+  backdrop-filter: blur(10px);
+}
+
+.worker-profile-dialog {
+  display: grid;
+  gap: 1rem;
+  width: min(1080px, 96vw);
+  max-height: calc(100vh - 2.5rem);
+  padding: 1.15rem;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background:
+    linear-gradient(160deg, rgba(24, 40, 35, 0.98), rgba(8, 17, 15, 0.99)),
+    var(--surface-solid);
+  box-shadow: 0 32px 90px rgba(0, 0, 0, 0.68);
+}
+
+.worker-profile-header,
+.worker-profile-identity,
+.training-title-row,
+.training-action {
+  display: flex;
+  align-items: center;
+}
+
+.worker-profile-header,
+.training-title-row {
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.worker-profile-identity {
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.worker-profile-identity h2 {
+  margin-bottom: 0.25rem;
+  font-size: 1.45rem;
+}
+
+.worker-profile-identity > div > span {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.worker-profile-avatar {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(244, 183, 94, 0.42);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(244, 183, 94, 0.22), rgba(45, 212, 191, 0.18));
+  color: var(--gold);
+}
+
+.worker-profile-avatar svg,
+.profile-close svg {
+  width: 22px;
+  height: 22px;
+}
+
+.profile-close {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(222, 238, 226, 0.06);
+  color: var(--text);
+}
+
+.profile-close:hover {
+  border-color: var(--border-strong);
+  background: rgba(222, 238, 226, 0.1);
+}
+
+.training-summary {
+  display: grid;
+  grid-template-columns: minmax(180px, auto) minmax(180px, 1fr) auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.9rem;
+  border: 1px solid rgba(45, 212, 191, 0.24);
+  border-radius: 10px;
+  background: var(--accent-soft);
+}
+
+.training-summary span,
+.training-summary strong {
+  display: block;
+}
+
+.training-summary > div:first-child > span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.training-summary > div:first-child > strong,
+.training-summary > b {
+  color: var(--text-strong);
+  font-size: 1.2rem;
+}
+
+.training-progress-track {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.training-progress-track span {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--gold));
+  transition: width 0.25s ease;
+}
+
+.training-roadmap {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.training-card {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 0.85rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(222, 238, 226, 0.045);
+}
+
+.training-card.available {
+  border-color: rgba(244, 183, 94, 0.36);
+  background: rgba(244, 183, 94, 0.075);
+}
+
+.training-card.completed {
+  border-color: rgba(52, 211, 153, 0.3);
+  background: rgba(52, 211, 153, 0.07);
+}
+
+.training-card.locked {
+  opacity: 0.7;
+}
+
+.training-order {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--muted);
+  font-weight: 950;
+}
+
+.training-card.available .training-order {
+  border-color: rgba(244, 183, 94, 0.52);
+  color: var(--gold);
+}
+
+.training-card.completed .training-order {
+  border-color: rgba(52, 211, 153, 0.5);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.training-order svg {
+  width: 20px;
+  height: 20px;
+}
+
+.training-content {
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.training-code {
+  color: var(--gold);
+  font-size: 0.75rem;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+}
+
+.training-title-row h3 {
+  margin: 0.16rem 0 0;
+  color: var(--text-strong);
+  font-size: 1rem;
+}
+
+.training-state {
+  padding: 0.35rem 0.58rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.training-state.done {
+  border-color: rgba(52, 211, 153, 0.34);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.training-state.ready {
+  border-color: rgba(244, 183, 94, 0.38);
+  background: var(--gold-soft);
+  color: var(--gold);
+}
+
+.training-state.blocked {
+  color: var(--muted);
+}
+
+.training-meta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.training-meta span {
+  padding: 0.48rem 0.58rem;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.training-meta strong {
+  color: var(--text);
+}
+
+.training-content small {
+  color: var(--muted-2);
+}
+
+.training-action {
+  justify-content: flex-end;
+}
+
+.inline-action {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 900;
+  text-decoration: underline;
 }
 
 .form-note {
@@ -1534,6 +1811,42 @@ tbody tr:hover {
   .attendance-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .worker-profile-overlay {
+    padding: 0;
+    place-items: stretch;
+  }
+
+  .worker-profile-dialog {
+    width: 100%;
+    max-height: 100vh;
+    border-width: 0;
+    border-radius: 0;
+  }
+
+  .worker-profile-header,
+  .training-title-row {
+    align-items: flex-start;
+  }
+
+  .training-summary,
+  .training-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .training-card {
+    grid-template-columns: 40px minmax(0, 1fr);
+    padding: 0.72rem;
+  }
+
+  .training-order {
+    width: 36px;
+    height: 36px;
+  }
+
+  .training-action .btn {
+    width: 100%;
   }
 
   .group-metrics {

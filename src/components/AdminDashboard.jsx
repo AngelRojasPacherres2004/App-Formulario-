@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, RefreshCcw, Save, Trash2 } from "lucide-react";
+import { CheckCircle2, GraduationCap, LockKeyhole, Plus, RefreshCcw, Save, Trash2, X } from "lucide-react";
 import {
   createTask,
   createTienda,
@@ -9,6 +9,7 @@ import {
   deleteUser,
   friendlyError,
   getAttendanceForDate,
+  getUserTrainingProfile,
   listAllActivityLogs,
   listAttendances,
   listTasks,
@@ -16,6 +17,7 @@ import {
   listWorkers,
   markAttendance,
   selectUsers,
+  setUserTrainingStatus,
   setTaskScoringRules,
   updateTask,
   updateTienda,
@@ -27,11 +29,13 @@ import {
   emptyQuantityRanges,
   getActivityCaptureMode,
   getTaskTitle,
-  isPairUnit,
   MAX_SCORE_QUANTITY,
   normalizeMeasurementType,
   normalizeRole,
   quantityRangesFromRules,
+  taskUsesBrandsByDefault,
+  taskUsesGuideBreakdown,
+  taskUsesLote,
   validateQuantityRanges
 } from "../lib/scoring";
 import { useAsyncData } from "../lib/hooks";
@@ -85,6 +89,7 @@ function UsersPanel() {
     activo: true
   });
   const [editId, setEditId] = useState("");
+  const [profileUserId, setProfileUserId] = useState("");
   const [editForm, setEditForm] = useState({
     nombre: "",
     email: "",
@@ -98,6 +103,7 @@ function UsersPanel() {
   });
 
   const selectedUser = users.find((user) => String(user.id) === String(editId));
+  const profileUser = users.find((user) => String(user.id) === String(profileUserId));
 
   useEffect(() => {
     if (!selectedUser) return;
@@ -227,7 +233,16 @@ function UsersPanel() {
   return (
     <div className="stack">
       <Panel title="Gestion de usuarios" eyebrow="Administracion">
-        {loading ? <LoadingBlock /> : <DataTable rows={rows} />}
+        <Alert>Presiona un trabajador para abrir su perfil y revisar sus capacitaciones.</Alert>
+        {loading ? (
+          <LoadingBlock />
+        ) : (
+          <DataTable
+            rows={rows}
+            columns={["Nombre", "Usuario", "Rol", "Activo", "Fecha nacimiento"]}
+            onRowClick={(row) => setProfileUserId(String(row.id))}
+          />
+        )}
         {error ? <Alert type="error">{error}</Alert> : null}
       </Panel>
 
@@ -342,6 +357,148 @@ function UsersPanel() {
           </div>
         ) : null}
       </Panel>
+
+      {profileUser ? (
+        <WorkerTrainingProfile user={profileUser} onClose={() => setProfileUserId("")} />
+      ) : null}
+    </div>
+  );
+}
+
+function WorkerTrainingProfile({ user, onClose }) {
+  const { data, setData, loading, error, reload } = useAsyncData(
+    () => getUserTrainingProfile(user.id),
+    [user.id],
+    null
+  );
+  const [savingCourse, setSavingCourse] = useState("");
+  const [status, setStatus] = useState(null);
+
+  useEffect(() => {
+    function closeOnEscape(event) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
+  async function updateTraining(training) {
+    setStatus(null);
+    setSavingCourse(training.id_curso);
+    try {
+      const updated = await setUserTrainingStatus(user.id, training.id_curso, !training.completado);
+      setData(updated);
+      setStatus({
+        type: "success",
+        message: training.completado
+          ? `${training.id_curso} fue desmarcada correctamente.`
+          : `${training.id_curso} fue marcada como completada.`
+      });
+    } catch (err) {
+      setStatus({ type: "error", message: friendlyError(err) });
+    } finally {
+      setSavingCourse("");
+    }
+  }
+
+  const trainings = data?.trainings || [];
+  const summary = data?.summary || { completed: 0, total: trainings.length, percent: 0 };
+
+  return (
+    <div
+      className="worker-profile-overlay"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="worker-profile-dialog" role="dialog" aria-modal="true" aria-label={`Perfil de ${user.nombre || user.email}`}>
+        <header className="worker-profile-header">
+          <div className="worker-profile-identity">
+            <span className="worker-profile-avatar"><GraduationCap /></span>
+            <div>
+              <p className="eyebrow">Perfil del trabajador</p>
+              <h2>{user.nombre || user.email}</h2>
+              <span>{user.email} · {normalizeRole(user.rol)} · {boolValue(user.activo) ? "Activo" : "Inactivo"}</span>
+            </div>
+          </div>
+          <button type="button" className="profile-close" aria-label="Cerrar perfil" onClick={onClose}>
+            <X />
+          </button>
+        </header>
+
+        <div className="training-summary">
+          <div>
+            <span>Progreso de capacitaciones</span>
+            <strong>{summary.completed} de {summary.total}</strong>
+          </div>
+          <div className="training-progress-track" aria-label={`${summary.percent}% completado`}>
+            <span style={{ width: `${summary.percent}%` }} />
+          </div>
+          <b>{summary.percent}%</b>
+        </div>
+
+        {status ? <StatusAlert status={status} /> : null}
+        {loading ? <LoadingBlock label="Cargando capacitaciones" /> : null}
+        {error ? (
+          <Alert type="error">
+            {error} <button type="button" className="inline-action" onClick={reload}>Reintentar</button>
+          </Alert>
+        ) : null}
+
+        {!loading && !error ? (
+          <div className="training-roadmap">
+            {trainings.map((training) => {
+              const locked = !training.disponible;
+              const cannotUnmark = training.completado && !training.puede_desmarcar;
+              return (
+                <article
+                  key={training.id_curso}
+                  className={`training-card ${training.completado ? "completed" : locked ? "locked" : "available"}`}
+                >
+                  <div className="training-order">
+                    {training.completado ? <CheckCircle2 /> : locked ? <LockKeyhole /> : <span>{training.orden}</span>}
+                  </div>
+                  <div className="training-content">
+                    <div className="training-title-row">
+                      <div>
+                        <span className="training-code">{training.id_curso}</span>
+                        <h3>{training.nombre_curso}</h3>
+                      </div>
+                      <span className={`training-state ${training.completado ? "done" : locked ? "blocked" : "ready"}`}>
+                        {training.completado ? "Completada" : locked ? "Bloqueada" : "Disponible"}
+                      </span>
+                    </div>
+                    <div className="training-meta">
+                      <span><strong>Competencia:</strong> {training.competencias}</span>
+                      <span><strong>Duracion:</strong> {training.nro_horas}</span>
+                      <span><strong>Inversion:</strong> {training.inversion_curso}</span>
+                    </div>
+                    {training.completado && training.completado_en ? (
+                      <small>Completada el {formatDateTimeLima(training.completado_en)}</small>
+                    ) : null}
+                    <div className="training-action">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={training.completado ? "secondary" : "primary"}
+                        icon={training.completado ? CheckCircle2 : locked ? LockKeyhole : GraduationCap}
+                        loading={savingCourse === training.id_curso}
+                        disabled={Boolean(savingCourse) || locked || cannotUnmark}
+                        onClick={() => updateTraining(training)}
+                      >
+                        {training.completado
+                          ? cannotUnmark ? "Completa cursos posteriores" : "Desmarcar"
+                          : locked ? `Completa primero CAP ${Number(training.orden) - 1}` : "Marcar completada"}
+                      </Button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : null}
+      </section>
     </div>
   );
 }
@@ -366,7 +523,7 @@ function defaultTaskForm() {
 
 function taskPayloadFromForm(form) {
   const tipo = normalizeMeasurementType(form.tipo_medicion);
-  const usesPairs = isPairUnit(form.unidad_base);
+  const task = { titulo: form.titulo };
   return {
     nombre: form.titulo.trim(),
     titulo: form.titulo.trim(),
@@ -375,10 +532,10 @@ function taskPayloadFromForm(form) {
     tipo_medicion: tipo,
     unidad_medida: form.unidad_base.trim() || "Ninguna",
     unidad_base: form.unidad_base.trim() || null,
-    requiere_marca: usesPairs || Boolean(form.requiere_marca),
+    requiere_marca: taskUsesBrandsByDefault(task),
     requiere_tiempo: Boolean(form.requiere_tiempo || tipo === "tiempo"),
-    requiere_lote: Boolean(form.requiere_lote),
-    requiere_numero_guia: Boolean(form.requiere_numero_guia)
+    requiere_lote: taskUsesLote(task),
+    requiere_numero_guia: taskUsesGuideBreakdown(task)
   };
 }
 
@@ -436,10 +593,10 @@ function TasksPanel() {
       tipo_tarea: selectedTask.tipo_tarea || "General",
       tipo_medicion: normalizeMeasurementType(selectedTask.tipo_medicion),
       unidad_base: selectedTask.unidad_medida || selectedTask.unidad_base || selectedTask.unidad || "Ninguna",
-      requiere_marca: Boolean(selectedTask.requiere_marca),
+      requiere_marca: taskUsesBrandsByDefault(selectedTask),
       requiere_tiempo: Boolean(selectedTask.requiere_tiempo),
-      requiere_lote: Boolean(selectedTask.requiere_lote),
-      requiere_numero_guia: Boolean(selectedTask.requiere_numero_guia),
+      requiere_lote: taskUsesLote(selectedTask),
+      requiere_numero_guia: taskUsesGuideBreakdown(selectedTask),
       ranges: quantityRangesFromRules(rules),
       puntaje_fijo: Number(selectedTask.puntaje_fijo || selectedTask.puntaje || 1),
       puntaje_turno_simple: Number(selectedTask.puntaje_turno_simple || selectedTask.puntos_turno_simple || 1),
@@ -591,6 +748,11 @@ function TasksPanel() {
 }
 
 function TaskForm({ form, setForm, onSubmit, saving, submitLabel }) {
+  const contextualTask = { titulo: form.titulo };
+  const allowsBrands = taskUsesBrandsByDefault(contextualTask);
+  const allowsLote = taskUsesLote(contextualTask);
+  const allowsGuideNumber = taskUsesGuideBreakdown(contextualTask);
+
   return (
     <form className="stack" onSubmit={onSubmit} noValidate>
       <div className="form-grid">
@@ -610,26 +772,32 @@ function TaskForm({ form, setForm, onSubmit, saving, submitLabel }) {
         <TextInput
           label="Unidad base"
           value={form.unidad_base}
-          onChange={(unidad_base) =>
-            setForm({
-              ...form,
-              unidad_base,
-              requiere_marca: isPairUnit(unidad_base) || form.requiere_marca
-            })
-          }
+          onChange={(unidad_base) => setForm({ ...form, unidad_base })}
           placeholder="Pares, cajas, bultos o Ninguna"
         />
         <CheckboxInput label="Tarea activa" checked={form.activo} onChange={(activo) => setForm({ ...form, activo })} />
         <CheckboxInput
           label="Requiere marca"
-          checked={isPairUnit(form.unidad_base) || form.requiere_marca}
-          disabled={isPairUnit(form.unidad_base)}
-          onChange={(requiere_marca) => setForm({ ...form, requiere_marca })}
-          hint={isPairUnit(form.unidad_base) ? "Las tareas medidas en pares usan marcas automaticamente." : undefined}
+          checked={allowsBrands}
+          disabled
+          onChange={() => {}}
+          hint="Se activa automaticamente solo para Etiquetado."
         />
         <CheckboxInput label="Requiere tiempo" checked={form.requiere_tiempo} onChange={(requiere_tiempo) => setForm({ ...form, requiere_tiempo })} />
-        <CheckboxInput label="Requiere lote" checked={form.requiere_lote} onChange={(requiere_lote) => setForm({ ...form, requiere_lote })} />
-        <CheckboxInput label="Requiere numero de guia" checked={form.requiere_numero_guia} onChange={(requiere_numero_guia) => setForm({ ...form, requiere_numero_guia })} />
+        <CheckboxInput
+          label="Requiere lote"
+          checked={allowsLote}
+          disabled
+          onChange={() => {}}
+          hint="Se activa automaticamente solo para Etiquetado."
+        />
+        <CheckboxInput
+          label="Requiere numero de guia"
+          checked={allowsGuideNumber}
+          disabled
+          onChange={() => {}}
+          hint="Solo para Revision de Guia (Devolucion) y Revision de Guia (Despacho)."
+        />
       </div>
       <ScoreFields form={form} setForm={setForm} />
       <div className="form-actions">

@@ -268,6 +268,28 @@ export async function deleteUser(userId) {
   return { deleted: true, archived: false };
 }
 
+export async function getUserTrainingProfile(userId) {
+  const apiResult = await requestLocalApi(`/api/users/${encodeURIComponent(userId)}/trainings`);
+  if (!apiResult?.user || !Array.isArray(apiResult.trainings)) {
+    throw new Error("El backend local debe estar activo para cargar las capacitaciones.");
+  }
+  return apiResult;
+}
+
+export async function setUserTrainingStatus(userId, courseId, completed) {
+  const apiResult = await requestLocalApi(
+    `/api/users/${encodeURIComponent(userId)}/trainings/${encodeURIComponent(courseId)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ completado: Boolean(completed) })
+    }
+  );
+  if (!apiResult?.user || !Array.isArray(apiResult.trainings)) {
+    throw new Error("No se pudo actualizar la capacitacion.");
+  }
+  return apiResult;
+}
+
 export async function listTasks() {
   const apiResult = await requestLocalApi("/api/tasks");
   let tasks = apiResult?.tasks;
@@ -529,6 +551,7 @@ function activityLogInsertPayload(resourceName, payload) {
     turno: payload.turno,
     tienda_id: payload.tienda_id,
     numero_guia: payload.numero_guia,
+    dato_extra: payload.lote,
     observacion: payload.observacion || payload.detalle,
     puntos_obtenidos: payload.puntos_obtenidos
   };
@@ -603,10 +626,11 @@ function normalizeActivityLog(row) {
   const normalized = { ...row };
   if ("usuario_id" in normalized && !("trabajador_id" in normalized)) normalized.trabajador_id = normalized.usuario_id;
   if ("observacion" in normalized && !("detalle" in normalized)) normalized.detalle = normalized.observacion;
-  if ("dato_extra" in normalized && !("tiempo_minutos" in normalized)) {
+  if ("dato_extra" in normalized && normalized.dato_extra !== null && String(normalized.dato_extra).trim() !== "") {
     const rawExtra = normalized.dato_extra;
     const parsed = Number(rawExtra);
-    normalized.tiempo_minutos = Number.isNaN(parsed) ? rawExtra : parsed;
+    if (Number.isNaN(parsed)) normalized.lote = normalized.lote || rawExtra;
+    else if (normalized.tiempo_minutos === null || normalized.tiempo_minutos === undefined) normalized.tiempo_minutos = parsed;
   }
   if ("tarea" in normalized && !("actividad_nombre" in normalized)) normalized.actividad_nombre = normalized.tarea;
   return normalized;

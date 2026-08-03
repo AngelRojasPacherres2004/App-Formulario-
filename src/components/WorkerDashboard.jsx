@@ -24,6 +24,7 @@ import {
   SIMPLE_SHIFT,
   taskUsesBrandsByDefault,
   taskUsesGuideBreakdown,
+  taskUsesLote,
   taskUsesStore
 } from "../lib/scoring";
 import { useAsyncData } from "../lib/hooks";
@@ -48,9 +49,8 @@ function emptyRecord() {
     taskKey: "",
     cantidad: "",
     usaMarcas: false,
+    lote: "",
     tiendaId: "",
-    usaGuia: false,
-    numeroGuia: "",
     usaGuias: false,
     guias: [emptyGuideShare()],
     marcas: [emptyBrandShare()],
@@ -107,16 +107,14 @@ function RegisterActivity({ user }) {
 
   function handleTaskChange(index, taskKey) {
     const task = taskMap[taskKey];
-    const usesBrands = taskUsesBrandsByDefault(task);
     setRecords((current) =>
       current.map((record, recordIndex) =>
         recordIndex === index
           ? {
               ...emptyRecord(),
               taskKey,
-              usaMarcas: usesBrands,
-              usaGuia: Boolean(task?.requiere_numero_guia) && !taskUsesGuideBreakdown(task),
-              usaGuias: taskUsesGuideBreakdown(task) && !usesBrands
+              usaMarcas: taskUsesBrandsByDefault(task),
+              usaGuias: taskUsesGuideBreakdown(task)
             }
           : record
       )
@@ -152,7 +150,7 @@ function RegisterActivity({ user }) {
     const [fallbackType, fallbackUnit] = getActivityCaptureMode(title);
     const type = isGroupLeaderTimeTask(task) ? "tiempo" : task?.tipo_medicion ? dbType : normalizeMeasurementType(fallbackType);
     const unit = task?.unidad_medida || task?.unidad_base || task?.unidad || fallbackUnit;
-    const marcas = record.usaMarcas
+    const marcas = taskUsesBrandsByDefault(task) && record.usaMarcas
       ? record.marcas.map((item) => ({ marca_id: Number(item.marca_id), cantidad: Number(item.cantidad) }))
       : [];
     const guias = taskUsesGuideBreakdown(task) && record.usaGuias
@@ -160,7 +158,7 @@ function RegisterActivity({ user }) {
       : [];
     const usesStore = taskUsesStore(task);
     const tiendaId = usesStore && record.tiendaId ? Number(record.tiendaId) : null;
-    const numeroGuia = !guias.length && record.usaGuia ? String(record.numeroGuia || "").trim() : null;
+    const lote = taskUsesLote(task) ? String(record.lote || "").trim().toUpperCase() || null : null;
 
     let cantidad = null;
     let cantidadPuntaje = null;
@@ -200,7 +198,7 @@ function RegisterActivity({ user }) {
       guias,
       usesStore,
       tiendaId,
-      numeroGuia
+      lote
     };
   }
 
@@ -218,9 +216,6 @@ function RegisterActivity({ user }) {
       if (shape.usesStore && !stores.some((store) => String(store.id) === String(record.tiendaId))) {
         return `Selecciona una tienda valida para ${shape.title}.`;
       }
-      if (record.usaGuia && !String(record.numeroGuia || "").trim()) {
-        return `Ingresa el numero de guia para ${shape.title}.`;
-      }
       if (shape.guias.length) {
         if (shape.guias.some((item) => !item.numero_guia || !Number.isFinite(item.cantidad) || item.cantidad <= 0)) {
           return `Completa cada número de guía y su cantidad para ${shape.title}.`;
@@ -230,7 +225,7 @@ function RegisterActivity({ user }) {
           return `No puedes repetir un número de guía en ${shape.title}.`;
         }
       }
-      if (record.usaMarcas) {
+      if (taskUsesBrandsByDefault(shape.task) && record.usaMarcas) {
         const total = Number(record.cantidad || 0);
         const distributed = brandTotal(record.marcas);
         if (total <= 0) return `Ingresa primero la cantidad total para ${shape.title}.`;
@@ -315,7 +310,7 @@ function RegisterActivity({ user }) {
             detalle: record.detalle.trim() || null,
             turno: shape.turno,
             tienda_id: shape.tiendaId,
-            numero_guia: shape.numeroGuia,
+            lote: shape.lote,
             puntos_obtenidos: points,
             marcas: shape.marcas,
             guias: shape.guias
@@ -472,15 +467,10 @@ function DynamicRecordFields({ record, task, brands, stores, onChange }) {
             onChange={(cantidad) => onChange({ cantidad })}
           />
         ) : null}
-        {!record.usaGuias ? <BrandFields record={record} brands={brands} onChange={onChange} /> : null}
+        {taskUsesBrandsByDefault(task) ? <BrandFields record={record} brands={brands} onChange={onChange} /> : null}
         {usesGuideBreakdown ? <GuideFields record={record} onChange={onChange} /> : null}
-        <OptionalContextFields
-          record={record}
-          stores={stores}
-          onChange={onChange}
-          showStore={usesStore}
-          showGuide={!usesGuideBreakdown || !record.usaGuias}
-        />
+        {taskUsesLote(task) ? <LoteField record={record} onChange={onChange} /> : null}
+        <OptionalContextFields record={record} stores={stores} onChange={onChange} showStore={usesStore} />
         <TextArea label="Detalle" value={record.detalle} onChange={(detalle) => onChange({ detalle })} placeholder="Comentarios opcionales" />
       </div>
     );
@@ -497,7 +487,8 @@ function DynamicRecordFields({ record, task, brands, stores, onChange }) {
           value={record.cantidad}
           onChange={(cantidad) => onChange({ cantidad })}
         />
-        <BrandFields record={record} brands={brands} onChange={onChange} />
+        {taskUsesBrandsByDefault(task) ? <BrandFields record={record} brands={brands} onChange={onChange} /> : null}
+        {taskUsesLote(task) ? <LoteField record={record} onChange={onChange} /> : null}
         <OptionalContextFields record={record} stores={stores} onChange={onChange} showStore={usesStore} />
         <TextArea label="Detalle" value={record.detalle} onChange={(detalle) => onChange({ detalle })} placeholder="Comentarios opcionales" />
       </div>
@@ -538,7 +529,7 @@ function DynamicRecordFields({ record, task, brands, stores, onChange }) {
   );
 }
 
-function OptionalContextFields({ record, stores, onChange, showStore = false, showGuide = true }) {
+function OptionalContextFields({ record, stores, onChange, showStore = false }) {
   return (
     <>
       {showStore ? (
@@ -552,24 +543,6 @@ function OptionalContextFields({ record, stores, onChange, showStore = false, sh
           ]}
         />
       ) : null}
-      {showGuide ? (
-        <>
-          <CheckboxInput
-            label="Agregar numero de guia"
-            checked={record.usaGuia}
-            onChange={(usaGuia) => onChange({ usaGuia, numeroGuia: usaGuia ? record.numeroGuia : "" })}
-            hint="Activalo cuando la actividad tenga una guia asociada."
-          />
-          {record.usaGuia ? (
-            <TextInput
-              label="Numero de guia"
-              value={record.numeroGuia}
-              onChange={(numeroGuia) => onChange({ numeroGuia })}
-              placeholder="Ej. GUIA-001"
-            />
-          ) : null}
-        </>
-      ) : null}
     </>
   );
 }
@@ -582,9 +555,6 @@ function GuideFields({ record, onChange }) {
         checked={record.usaGuias}
         onChange={(usaGuias) => onChange({
           usaGuias,
-          usaMarcas: usaGuias ? false : record.usaMarcas,
-          usaGuia: false,
-          numeroGuia: "",
           guias: record.guias?.length ? record.guias : [emptyGuideShare()]
         })}
         hint="Disponible solo para Revisión de Guía. El puntaje se calculará una sola vez con la suma total."
@@ -593,6 +563,17 @@ function GuideFields({ record, onChange }) {
         <GuideDistribution items={record.guias} onChange={(guias) => onChange({ guias })} />
       ) : null}
     </>
+  );
+}
+
+function LoteField({ record, onChange }) {
+  return (
+    <TextInput
+      label="Lote"
+      value={record.lote}
+      onChange={(lote) => onChange({ lote: lote.toUpperCase() })}
+      placeholder="Ej. A05"
+    />
   );
 }
 
@@ -647,6 +628,7 @@ export function WorkerHistory({ user }) {
       Puntos: log.puntos_obtenidos,
       Tienda: storeNameById[log.tienda_id] || "",
       Guia: log.numero_guia || "",
+      Lote: log.lote || "",
       Marcas: (log.marcas || []).map((item) => `${item.marca_nombre}: ${item.cantidad}`).join(", "),
       Detalle: log.detalle
     };

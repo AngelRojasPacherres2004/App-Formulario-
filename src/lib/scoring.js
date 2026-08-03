@@ -106,15 +106,14 @@ const groupLeaderTimeTaskNames = new Set([
   "embalado y rotulado de guia"
 ]);
 
-const defaultBrandTaskNames = new Set([
-  "etiquetado",
-  "visita de tienda",
-  "pedido mayorista",
-  "picking",
-  "pistoleado",
-  "embalado y rotulado de guia",
-  "inventario"
+const guideNumberTaskNames = new Set([
+  "revision de guia devolucion",
+  "revision de guia despacho"
 ]);
+
+function normalizedTaskName(task) {
+  return normalizeText(typeof task === "string" ? task : getTaskTitle(task));
+}
 
 export function isGroupLeaderTimeTask(task) {
   return groupLeaderTimeTaskNames.has(normalizeText(getTaskTitle(task)));
@@ -126,13 +125,15 @@ export function isPairUnit(value) {
 }
 
 export function taskUsesBrandsByDefault(task) {
-  if (isPairUnit(task?.unidad_medida || task?.unidad_base || task?.unidad)) return true;
-  if (typeof task?.requiere_marca === "boolean") return task.requiere_marca;
-  return defaultBrandTaskNames.has(normalizeText(getTaskTitle(task)));
+  return normalizedTaskName(task) === "etiquetado";
+}
+
+export function taskUsesLote(task) {
+  return normalizedTaskName(task) === "etiquetado";
 }
 
 export function taskUsesGuideBreakdown(task) {
-  return normalizeText(getTaskTitle(task)).startsWith("revision de guia");
+  return guideNumberTaskNames.has(normalizedTaskName(task));
 }
 
 export function taskUsesStore(task) {
@@ -225,8 +226,7 @@ export function getGroupLeaderTaskMode(taskName) {
     };
   }
 
-  const loteKeywords = ["etiquetado", "codificado", "codificacion"];
-  if (loteKeywords.some((keyword) => name.includes(keyword))) {
+  if (taskUsesLote(taskName)) {
     return {
       mode: "lote",
       label: "Lote",
@@ -261,14 +261,7 @@ export function getGroupLeaderTaskMode(taskName) {
     };
   }
 
-  const guideKeywords = [
-    "revision de guia",
-    "revicicion de guia",
-    "revisicion de guia",
-    "recepcion de guia",
-    "guia"
-  ];
-  if (guideKeywords.some((keyword) => name.includes(keyword))) {
+  if (taskUsesGuideBreakdown(taskName)) {
     return {
       mode: "guia",
       label: "Codigo de guia",
