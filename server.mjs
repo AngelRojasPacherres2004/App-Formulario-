@@ -607,18 +607,22 @@ async function selectUserTrainingProfile(userId) {
       .maybeSingle(),
     supabase
       .from("capacitaciones")
-      .select("id_curso,orden,nombre_curso,competencias,nro_horas,inversion_curso,activo")
+      .select("id,id_curso,orden,nombre_curso,competencias,nro_horas,inversion_curso,activo")
       .eq("activo", true)
       .order("orden", { ascending: true }),
     supabase
       .from("usuario_capacitaciones")
-      .select("curso_id,completado,completado_en,completado_por")
+      .select("capacitacion_id,curso_id,completado,completado_en,completado_por")
       .eq("usuario_id", userId)
   ]);
 
   if (userResult.error) throw userResult.error;
   if (!userResult.data) throw new Error("Usuario no encontrado.");
   if (coursesResult.error || progressResult.error) {
+    const missingNumericId = [coursesResult.error, progressResult.error]
+      .filter(Boolean)
+      .some((error) => /capacitacion_id/i.test(error.message || ""));
+    if (missingNumericId) throw new Error("Falta aplicar la migracion sql/015_usuario_capacitacion_id.sql en Supabase.");
     const migrationMissing = [coursesResult.error, progressResult.error]
       .filter(Boolean)
       .some((error) => /capacitaciones|schema cache|does not exist/i.test(error.message || ""));
@@ -640,6 +644,7 @@ async function selectUserTrainingProfile(userId) {
 
     return {
       ...course,
+      capacitacion_id: Number(course.id),
       completado: completed,
       completado_en: progress?.completado_en || null,
       completado_por: progress?.completado_por || null,
@@ -692,9 +697,9 @@ async function handleUpdateUserTraining(request, response, userId, courseId) {
 
     const [userResult, courseResult, coursesResult, progressResult] = await Promise.all([
       supabase.from("usuarios").select("id").eq("id", userId).maybeSingle(),
-      supabase.from("capacitaciones").select("id_curso,orden").eq("id_curso", courseId).eq("activo", true).maybeSingle(),
-      supabase.from("capacitaciones").select("id_curso,orden").eq("activo", true).order("orden", { ascending: true }),
-      supabase.from("usuario_capacitaciones").select("curso_id,completado").eq("usuario_id", userId)
+      supabase.from("capacitaciones").select("id,id_curso,orden").eq("id_curso", courseId).eq("activo", true).maybeSingle(),
+      supabase.from("capacitaciones").select("id,id_curso,orden").eq("activo", true).order("orden", { ascending: true }),
+      supabase.from("usuario_capacitaciones").select("capacitacion_id,curso_id,completado").eq("usuario_id", userId)
     ]);
     const firstError = [userResult.error, courseResult.error, coursesResult.error, progressResult.error].find(Boolean);
     if (firstError) throw firstError;
@@ -731,6 +736,7 @@ async function handleUpdateUserTraining(request, response, userId, courseId) {
 
     const progressPayload = {
       usuario_id: userId,
+      capacitacion_id: Number(courseResult.data.id),
       curso_id: courseId,
       completado: body.completado,
       completado_en: body.completado ? new Date().toISOString() : null,
@@ -743,7 +749,10 @@ async function handleUpdateUserTraining(request, response, userId, courseId) {
 
     sendJson(response, 200, await selectUserTrainingProfile(userId));
   } catch (error) {
-    const message = error.message || "No se pudo actualizar la capacitacion.";
+    const rawMessage = error.message || "No se pudo actualizar la capacitacion.";
+    const message = /capacitacion_id/i.test(rawMessage)
+      ? "Falta aplicar la migracion sql/015_usuario_capacitacion_id.sql en Supabase."
+      : rawMessage;
     sendJson(response, /debes completar|no puedes desmarcar/i.test(message) ? 409 : 500, { error: message });
   }
 }

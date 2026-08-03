@@ -470,6 +470,7 @@ function WorkerTrainingProfile({ user, onClose }) {
                       </span>
                     </div>
                     <div className="training-meta">
+                      <span><strong>ID capacitacion:</strong> {training.capacitacion_id}</span>
                       <span><strong>Competencia:</strong> {training.competencias}</span>
                       <span><strong>Duracion:</strong> {training.nro_horas}</span>
                       <span><strong>Inversion:</strong> {training.inversion_curso}</span>

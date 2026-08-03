@@ -31,21 +31,26 @@ const catalogResponse = await fetch(
   }
 );
 const catalog = catalogResponse.ok ? await catalogResponse.json() : [];
-const assignmentResponse = await fetch(
-  `${env.SUPABASE_URL}/rest/v1/asignacion_capacitaciones?select=id`,
-  {
-    headers: {
-      apikey: env.SUPABASE_SECRET_KEY,
-      authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
-      prefer: "count=exact",
-      range: "0-0"
+async function tableCount(table) {
+  const tableResponse = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/${table}?select=id`,
+    {
+      headers: {
+        apikey: env.SUPABASE_SECRET_KEY,
+        authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
+        prefer: "count=exact",
+        range: "0-0"
+      }
     }
-  }
-);
-const assignmentRange = assignmentResponse.headers.get("content-range");
-const assignmentCount = assignmentResponse.ok && assignmentRange
-  ? Number(assignmentRange.split("/").at(-1))
-  : null;
+  );
+  const range = tableResponse.headers.get("content-range");
+  return tableResponse.ok && range ? Number(range.split("/").at(-1)) : null;
+}
+
+const [assignmentCount, progressCount] = await Promise.all([
+  tableCount("asignacion_capacitaciones"),
+  tableCount("usuario_capacitaciones")
+]);
 console.log(JSON.stringify({
   status: response.status,
   tables: Object.fromEntries(tables.map((table) => [
@@ -53,6 +58,7 @@ console.log(JSON.stringify({
     definitions[table]?.properties ? Object.keys(definitions[table].properties) : null
   ])),
   assignment_count: assignmentCount,
+  progress_count: progressCount,
   catalog_count: catalog.length,
   catalog
 }, null, 2));

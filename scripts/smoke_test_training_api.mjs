@@ -33,19 +33,20 @@ const adminResult = await db.from("usuarios").select("id,rol").eq("rol", "admini
 if (adminResult.error || !adminResult.data) throw new Error("No existe un administrador para probar la API.");
 const token = sessionToken(adminResult.data, secret);
 const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" };
-const baseUrl = "http://127.0.0.1:5180";
+const baseUrl = process.env.API_BASE_URL || "http://127.0.0.1:5180";
 
-const catalogCheck = await db.from("capacitaciones").select("id_curso").order("orden", { ascending: true });
-const progressCheck = await db.from("usuario_capacitaciones").select("id").limit(1);
+const catalogCheck = await db.from("capacitaciones").select("id,id_curso").order("orden", { ascending: true });
+const progressCheck = await db.from("usuario_capacitaciones").select("id,capacitacion_id").limit(1);
 if (catalogCheck.error || progressCheck.error || (catalogCheck.data || []).length !== 7) {
   const anyUser = await db.from("usuarios").select("id").limit(1).maybeSingle();
   const response = await fetch(`${baseUrl}/api/users/${anyUser.data?.id || 1}/trainings`, { headers });
   const payload = await response.json().catch(() => ({}));
+  const migrationMessagePresent = /01(?:2_capacitaciones_trabajadores|5_usuario_capacitacion_id)\.sql/i.test(payload.error || "");
   console.log(JSON.stringify({
-    ok: response.status === 500 && /012_capacitaciones_trabajadores\.sql/i.test(payload.error || ""),
+    ok: response.status === 500 && migrationMessagePresent,
     migration_ready: false,
     api_status: response.status,
-    migration_message_present: /012_capacitaciones_trabajadores\.sql/i.test(payload.error || "")
+    migration_message_present: migrationMessagePresent
   }, null, 2));
   process.exitCode = 2;
 } else {
@@ -82,6 +83,15 @@ if (catalogCheck.error || progressCheck.error || (catalogCheck.data || []).lengt
     const cap1UnmarkBlocked = await setCourse("CAP 1", false);
     const cap2Undone = await setCourse("CAP 2", false);
     const cap1Undone = await setCourse("CAP 1", false);
+    const storedProgress = await db
+      .from("usuario_capacitaciones")
+      .select("capacitacion_id,curso_id")
+      .eq("usuario_id", testUserId)
+      .eq("curso_id", "CAP 1")
+      .maybeSingle();
+    const cap1Catalog = (catalogCheck.data || []).find((course) => course.id_curso === "CAP 1");
+    const numericIdStored = !storedProgress.error &&
+      Number(storedProgress.data?.capacitacion_id) === Number(cap1Catalog?.id);
 
     const ok = initial.status === 200 &&
       initialPayload.trainings?.length === 7 &&
@@ -92,12 +102,14 @@ if (catalogCheck.error || progressCheck.error || (catalogCheck.data || []).lengt
       cap2Done.status === 200 &&
       cap1UnmarkBlocked.status === 409 &&
       cap2Undone.status === 200 &&
-      cap1Undone.status === 200;
+      cap1Undone.status === 200 &&
+      numericIdStored;
 
     result = {
       ok,
       migration_ready: true,
       courses: initialPayload.trainings?.length || 0,
+      numeric_training_id_stored: numericIdStored,
       forward_order_blocked: cap2Blocked.status === 409,
       reverse_order_blocked: cap1UnmarkBlocked.status === 409,
       cleanup_pending: true

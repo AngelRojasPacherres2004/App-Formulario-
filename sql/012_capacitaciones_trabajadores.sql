@@ -97,18 +97,67 @@ end $$;
 create table if not exists public.usuario_capacitaciones (
   id bigserial primary key,
   usuario_id bigint not null references public.usuarios(id) on delete cascade,
+  capacitacion_id bigint not null,
   curso_id text not null references public.capacitaciones(id_curso) on delete restrict,
   completado boolean not null default false,
   completado_en timestamptz,
   completado_por bigint references public.usuarios(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+  constraint fk_usuario_capacitaciones_capacitacion
+    foreign key (capacitacion_id) references public.capacitaciones(id) on delete restrict,
   constraint uq_usuario_capacitacion unique (usuario_id, curso_id),
+  constraint uq_usuario_capacitacion_numerica unique (usuario_id, capacitacion_id),
   constraint capacitacion_fecha_coherente check (
     (completado and completado_en is not null) or
     (not completado and completado_en is null)
   )
 );
+
+create or replace function public.sincronizar_referencia_capacitacion()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.capacitacion_id is null and new.curso_id is null then
+    raise exception 'Debes indicar la capacitacion.';
+  end if;
+
+  if new.capacitacion_id is null then
+    new.capacitacion_id := (
+      select id
+      from public.capacitaciones
+      where id_curso = new.curso_id
+    );
+  elsif new.curso_id is null then
+    new.curso_id := (
+      select id_curso
+      from public.capacitaciones
+      where id = new.capacitacion_id
+    );
+  elsif not exists (
+    select 1
+    from public.capacitaciones
+    where id = new.capacitacion_id
+      and id_curso = new.curso_id
+  ) then
+    raise exception 'El ID y el codigo de capacitacion no corresponden al mismo curso.';
+  end if;
+
+  if new.capacitacion_id is null or new.curso_id is null then
+    raise exception 'La capacitacion seleccionada no existe.';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_sincronizar_referencia_capacitacion on public.usuario_capacitaciones;
+create trigger trg_sincronizar_referencia_capacitacion
+before insert or update of capacitacion_id, curso_id on public.usuario_capacitaciones
+for each row execute function public.sincronizar_referencia_capacitacion();
 
 create or replace function public.validar_secuencia_capacitacion()
 returns trigger
@@ -122,7 +171,8 @@ declare
 begin
   select orden into curso_orden
   from public.capacitaciones
-  where id_curso = new.curso_id;
+  where id = new.capacitacion_id
+    and id_curso = new.curso_id;
 
   if curso_orden is null then
     raise exception 'La capacitacion seleccionada no existe.';
@@ -181,6 +231,9 @@ create index if not exists idx_usuario_capacitaciones_usuario
 
 create index if not exists idx_usuario_capacitaciones_curso
   on public.usuario_capacitaciones(curso_id);
+
+create index if not exists idx_usuario_capacitaciones_capacitacion
+  on public.usuario_capacitaciones(capacitacion_id);
 
 grant select on public.capacitaciones to anon, authenticated, service_role;
 grant select, insert, update, delete on public.usuario_capacitaciones to service_role;

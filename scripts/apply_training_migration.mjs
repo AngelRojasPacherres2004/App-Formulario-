@@ -18,20 +18,26 @@ const db = createClient(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
   auth: { persistSession: false, autoRefreshToken: false }
 });
 
-async function migrationReady() {
-  const [courses, progress] = await Promise.all([
+async function migrationState() {
+  const [courses, progress, numericProgress] = await Promise.all([
     db.from("capacitaciones").select("id_curso,orden").order("orden", { ascending: true }),
-    db.from("usuario_capacitaciones").select("id").limit(1)
+    db.from("usuario_capacitaciones").select("id").limit(1),
+    db.from("usuario_capacitaciones").select("id,capacitacion_id").limit(1)
   ]);
-  return !courses.error && !progress.error && (courses.data || []).length === 7;
+  const baseReady = !courses.error && !progress.error && (courses.data || []).length === 7;
+  return { baseReady, numericIdReady: baseReady && !numericProgress.error };
 }
 
-if (await migrationReady()) {
+const initialState = await migrationState();
+if (initialState.numericIdReady) {
   console.log(JSON.stringify({ ok: true, already_applied: true, courses: 7 }, null, 2));
   process.exit(0);
 }
 
-const sql = fs.readFileSync("sql/012_capacitaciones_trabajadores.sql", "utf8");
+const migrationFiles = initialState.baseReady
+  ? ["sql/015_usuario_capacitacion_id.sql"]
+  : ["sql/012_capacitaciones_trabajadores.sql", "sql/015_usuario_capacitacion_id.sql"];
+const sql = migrationFiles.map((file) => fs.readFileSync(file, "utf8")).join("\n\n");
 const attempts = [
   ["exec_sql", { query: sql }],
   ["exec_sql", { sql }],
@@ -44,7 +50,7 @@ const attempts = [
 const errors = [];
 for (const [functionName, payload] of attempts) {
   const result = await db.rpc(functionName, payload);
-  if (!result.error && (await migrationReady())) {
+  if (!result.error && (await migrationState()).numericIdReady) {
     console.log(JSON.stringify({ ok: true, applied_with_rpc: functionName, courses: 7 }, null, 2));
     process.exit(0);
   }
@@ -54,7 +60,7 @@ for (const [functionName, payload] of attempts) {
 console.log(JSON.stringify({
   ok: false,
   reason: "No hay una RPC SQL habilitada para crear las tablas.",
-  run_manually: "sql/012_capacitaciones_trabajadores.sql",
+  run_manually: migrationFiles,
   rpc_errors: errors
 }, null, 2));
 process.exitCode = 2;
