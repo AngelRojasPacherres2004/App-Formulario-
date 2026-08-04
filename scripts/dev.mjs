@@ -23,6 +23,19 @@ function portIsOpen(port) {
   });
 }
 
+async function backendIsCompatible() {
+  try {
+    const response = await fetch("http://127.0.0.1:5180/api/health", {
+      signal: AbortSignal.timeout(1_500)
+    });
+    if (!response.ok || !(response.headers.get("content-type") || "").includes("application/json")) return false;
+    const payload = await response.json();
+    return Number(payload.apiVersion) >= 3 && payload.features?.includes("attendance-report");
+  } catch {
+    return false;
+  }
+}
+
 function startNode(args, label) {
   const child = spawn(process.execPath, args, { cwd: root, stdio: "inherit" });
   children.push(child);
@@ -45,9 +58,12 @@ function shutdown(code = 0) {
 }
 
 if (!(await portIsOpen(5180))) {
-  startNode(["server.mjs"], "Backend");
+  startNode(["--watch", "server.mjs"], "Backend");
+} else if (await backendIsCompatible()) {
+  console.log("Backend actualizado disponible en http://127.0.0.1:5180");
 } else {
-  console.log("Backend disponible en http://127.0.0.1:5180");
+  console.error("El puerto 5180 usa un backend anterior. Cierra ese proceso y vuelve a ejecutar npm.cmd run dev.");
+  process.exit(1);
 }
 
 startNode(["node_modules/vite/bin/vite.js", "--host", "127.0.0.1"], "Vite");

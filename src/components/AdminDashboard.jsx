@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, GraduationCap, LockKeyhole, Plus, RefreshCcw, Save, Trash2, X } from "lucide-react";
+import { CheckCircle2, GraduationCap, LockKeyhole, Mail, Plus, RefreshCcw, Save, Send, Trash2, X } from "lucide-react";
 import {
   createTask,
   createTienda,
@@ -9,6 +9,7 @@ import {
   deleteUser,
   friendlyError,
   getAttendanceForDate,
+  getAttendanceReportSettings,
   getUserTrainingProfile,
   listAllActivityLogs,
   listAttendances,
@@ -16,7 +17,9 @@ import {
   listTiendas,
   listWorkers,
   markAttendance,
+  saveAttendanceReportSettings,
   selectUsers,
+  sendAttendanceReportNow,
   setUserTrainingStatus,
   setTaskScoringRules,
   updateTask,
@@ -71,6 +74,7 @@ export default function AdminDashboard({ section }) {
   if (section === "Usuarios") return <UsersPanel />;
   if (section === "Tareas") return <TasksPanel />;
   if (section === "Asistencia") return <AttendancePanel />;
+  if (section === "Notificaciones") return <NotificationsPanel />;
   if (section === "Tiendas") return <StoresPanel />;
   return <WorkerPointsPanel />;
 }
@@ -1015,6 +1019,228 @@ function AttendancePanel() {
         <DataTable rows={attendanceRows} />
       </Panel>
     </div>
+  );
+}
+
+function NotificationsPanel() {
+  const [reportDate, setReportDate] = useState(todayLimaISO());
+  const { data, loading, error, reload } = useAsyncData(
+    getAttendanceReportSettings,
+    [],
+    {
+      config: null,
+      history: [],
+      gmail: { sender: "calzado661@gmail.com", configured: false }
+    }
+  );
+  const [form, setForm] = useState({
+    activo: false,
+    destinatarios: "",
+    hora_envio: "18:00",
+    asunto: "Reporte diario de asistencia"
+  });
+  const [status, setStatus] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    if (!data?.config) return;
+    setForm({
+      activo: Boolean(data.config.activo && data?.gmail?.configured),
+      destinatarios: (data.config.destinatarios || []).join("\n"),
+      hora_envio: String(data.config.hora_envio || "18:00").slice(0, 5),
+      asunto: data.config.asunto || "Reporte diario de asistencia"
+    });
+  }, [data?.config, data?.gmail?.configured]);
+
+  function settingsPayload({ requireRecipients = false } = {}) {
+    const recipients = Array.from(new Set(
+      String(form.destinatarios || "")
+        .split(/[\n,;]+/)
+        .map((email) => email.trim().toLowerCase())
+        .filter(Boolean)
+    ));
+    const invalidEmail = recipients.find((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
+    if (invalidEmail) throw new Error(`El correo ${invalidEmail} no es valido.`);
+    if (recipients.length > 20) throw new Error("Solo se permiten hasta 20 correos destinatarios.");
+    if ((form.activo || requireRecipients) && !recipients.length) {
+      throw new Error("Agrega al menos un correo destinatario antes de continuar.");
+    }
+    return {
+      activo: Boolean(form.activo && data?.gmail?.configured),
+      destinatarios: recipients,
+      hora_envio: form.hora_envio,
+      asunto: form.asunto
+    };
+  }
+
+  async function handleSaveSettings() {
+    setStatus(null);
+    setSaving(true);
+    try {
+      await saveAttendanceReportSettings(settingsPayload());
+      setStatus({ type: "success", message: "Programacion del reporte guardada correctamente." });
+      reload();
+    } catch (err) {
+      setStatus({ type: "error", message: friendlyError(err) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSendNow() {
+    setStatus(null);
+    setSending(true);
+    let sendStarted = false;
+    try {
+      await saveAttendanceReportSettings(settingsPayload({ requireRecipients: true }));
+      sendStarted = true;
+      const result = await sendAttendanceReportNow(reportDate);
+      setStatus({
+        type: "success",
+        message: `Reporte enviado correctamente a ${result.recipients.length} correo(s), con ${result.attendeesCount} asistente(s).`
+      });
+    } catch (err) {
+      setStatus({ type: "error", message: friendlyError(err) });
+    } finally {
+      setSending(false);
+      if (sendStarted) reload();
+    }
+  }
+
+  const reportStatusLabels = {
+    procesando: "Procesando",
+    enviando: "Enviando",
+    enviado: "Enviado",
+    error: "Error",
+    omitido: "Omitido",
+    revision: "Requiere revision"
+  };
+  const historyRows = (data?.history || []).map((item) => ({
+    Fecha: item.fecha_reporte,
+    Envio: item.tipo_envio === "automatico" ? "Automatico" : "Manual",
+    Estado: reportStatusLabels[item.estado] || item.estado,
+    Destinatarios: (item.destinatarios || []).join(", "),
+    Asistentes: item.asistentes_count ?? "",
+    Intentos: item.intentos ?? 1,
+    "Fecha de envio": item.enviado_en ? formatDateTimeLima(item.enviado_en) : "",
+    Detalle: item.detalle_error || ""
+  }));
+  const gmailConfigured = Boolean(data?.gmail?.configured);
+  const controlsDisabled = loading || Boolean(error);
+  const hasRecipients = String(form.destinatarios || "").split(/[\n,;]+/).some((email) => email.trim());
+
+  return (
+    <Panel title="Reporte automatico por correo" eyebrow="Notificacion diaria" className="attendance-report-panel">
+      <div className="attendance-report-intro">
+        <span className="attendance-report-icon"><Mail /></span>
+        <div>
+          <strong>Recibe cada dia la lista de personas que asistieron</strong>
+          <p>El correo incluye el resumen, el detalle de asistentes y un archivo CSV. La hora se interpreta en America/Lima.</p>
+        </div>
+      </div>
+
+      {loading ? <LoadingBlock /> : null}
+      {error ? (
+        <div className="stack stack-compact">
+          <Alert type="error">{error}</Alert>
+          <div className="form-actions">
+            <Button variant="secondary" icon={RefreshCcw} onClick={reload}>Reintentar carga</Button>
+          </div>
+        </div>
+      ) : null}
+      <StatusAlert status={status} />
+
+      {!loading && !error && !gmailConfigured ? (
+        <Alert type="error">
+          Falta configurar GMAIL_APP_PASSWORD como variable privada de Netlify. Puedes guardar destinatarios y horario, pero el reporte automatico permanecera desactivado.
+        </Alert>
+      ) : null}
+
+      {!loading && !error && gmailConfigured ? (
+        <Alert type="success">Gmail esta listo para enviar desde {data.gmail.sender}.</Alert>
+      ) : null}
+
+      <div className="form-grid attendance-report-form">
+        <TextInput
+          label="Correo remitente"
+          value={data?.gmail?.sender || "calzado661@gmail.com"}
+          onChange={() => {}}
+          disabled
+          hint="Cuenta Gmail usada por el servidor."
+        />
+        <TextInput
+          label="Hora diaria de envio"
+          type="time"
+          value={form.hora_envio}
+          onChange={(hora_envio) => setForm({ ...form, hora_envio })}
+          disabled={controlsDisabled}
+          hint="La tarea programada revisa esta hora cada minuto."
+        />
+        <TextInput
+          label="Asunto del correo"
+          value={form.asunto}
+          onChange={(asunto) => setForm({ ...form, asunto })}
+          disabled={controlsDisabled}
+          maxLength={160}
+        />
+        <TextInput
+          label="Fecha para el envio manual"
+          type="date"
+          value={reportDate}
+          onChange={setReportDate}
+          disabled={controlsDisabled}
+          hint="El envio automatico siempre usa la fecha del dia."
+        />
+        <CheckboxInput
+          label="Activar envio automatico diario"
+          checked={form.activo}
+          onChange={(activo) => setForm({ ...form, activo })}
+          disabled={controlsDisabled || !gmailConfigured}
+          hint={gmailConfigured ? "Solo se enviara una vez por fecha." : "Configura Gmail para poder activarlo."}
+        />
+        <TextArea
+          label="Correos destinatarios"
+          value={form.destinatarios}
+          onChange={(destinatarios) => setForm({ ...form, destinatarios })}
+          disabled={controlsDisabled}
+          rows={4}
+          placeholder="correo1@gmail.com\ncorreo2@empresa.com"
+          hint="Escribe un correo por linea o separalos con comas. Maximo 20."
+        />
+      </div>
+
+      {data?.config?.ultimo_envio_en ? (
+        <p className="attendance-report-last-send">
+          Ultimo reporte enviado: <strong>{formatDateTimeLima(data.config.ultimo_envio_en)}</strong>.
+        </p>
+      ) : null}
+
+      <div className="form-actions attendance-report-actions">
+        <Button
+          icon={Save}
+          loading={saving}
+          disabled={controlsDisabled || sending}
+          onClick={handleSaveSettings}
+        >
+          Guardar programacion
+        </Button>
+        <Button
+          variant="secondary"
+          icon={Send}
+          loading={sending}
+          disabled={controlsDisabled || saving || !gmailConfigured || !hasRecipients}
+          onClick={handleSendNow}
+        >
+          Guardar y enviar ahora el reporte del {reportDate}
+        </Button>
+      </div>
+
+      <div className="attendance-report-history">
+        <h3>Historial de envios</h3>
+        <DataTable rows={historyRows} empty="Todavia no se enviaron reportes de asistencia." compact />
+      </div>
+    </Panel>
   );
 }
 

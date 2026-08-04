@@ -6,6 +6,14 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    server: {
+      proxy: {
+        "/api": {
+          target: "http://127.0.0.1:5180",
+          changeOrigin: true
+        }
+      }
+    },
     define: {
       __SUPABASE_URL__: JSON.stringify(env.VITE_SUPABASE_URL || env.SUPABASE_URL || ""),
       __SUPABASE_KEY__: JSON.stringify(

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   BarChart3,
+  BellRing,
   CalendarCheck2,
   ClipboardList,
   LogOut,
@@ -21,6 +22,7 @@ const adminItems = [
   { key: "Usuarios", icon: UsersRound },
   { key: "Tareas", label: "Tareas y puntajes", icon: ClipboardList },
   { key: "Asistencia", icon: CalendarCheck2 },
+  { key: "Notificaciones", icon: BellRing },
   { key: "Tiendas", icon: Store },
   { key: "Puntos", icon: BarChart3 }
 ];

@@ -4,6 +4,17 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createClient } from "@supabase/supabase-js";
+import {
+  gmailConfiguration,
+  localDateTimeParts,
+  normalizeRecipients,
+  normalizeReportSubject,
+  normalizeReportTime,
+  readAttendanceReportConfig,
+  readAttendanceReportHistory,
+  REPORT_TIME_ZONE,
+  sendAttendanceReport
+} from "./services/attendance_report.mjs";
 
 const moduleUrl = import.meta.url;
 const modulePath = moduleUrl ? fileURLToPath(moduleUrl) : "";
@@ -1263,6 +1274,137 @@ async function handleMarkAttendance(request, response) {
   }
 }
 
+function attendanceReportSchemaMissing(error) {
+  return ["42P01", "42703", "PGRST204", "PGRST205"].includes(error?.code);
+}
+
+function handleAttendanceReportError(response, error, fallback, defaultStatus = 500) {
+  if (attendanceReportSchemaMissing(error)) {
+    sendJson(response, 503, {
+      code: "ATTENDANCE_REPORT_MIGRATION_REQUIRED",
+      error: "Falta aplicar la migracion sql/017_reporte_asistencia_automatico.sql en Supabase."
+    });
+    return;
+  }
+  if (String(error?.message || "").includes("GMAIL_APP_PASSWORD")) {
+    sendJson(response, 503, {
+      code: "GMAIL_CONFIGURATION_REQUIRED",
+      error: "Falta configurar la contrasena de aplicacion de Gmail en Netlify."
+    });
+    return;
+  }
+  if (["EAUTH", "ECONNECTION", "ETIMEDOUT", "ESOCKET"].includes(error?.code)) {
+    sendJson(response, 502, {
+      code: "GMAIL_SEND_FAILED",
+      error: "Gmail rechazo o no completo el envio. Revisa la cuenta y su contrasena de aplicacion."
+    });
+    return;
+  }
+  sendJson(response, defaultStatus, { error: error?.message || fallback });
+}
+
+async function handleReadAttendanceReportSettings(request, response) {
+  try {
+    if (!requireAdministrator(request, response)) return;
+    const [config, history] = await Promise.all([
+      readAttendanceReportConfig(supabase),
+      readAttendanceReportHistory(supabase, 12)
+    ]);
+    const gmail = gmailConfiguration(env);
+    sendJson(response, 200, {
+      config: {
+        ...config,
+        hora_envio: String(config.hora_envio || "18:00").slice(0, 5)
+      },
+      history,
+      gmail: { sender: gmail.sender, configured: gmail.configured }
+    });
+  } catch (error) {
+    handleAttendanceReportError(response, error, "No se pudo cargar la configuracion del reporte.");
+  }
+}
+
+async function handleUpdateAttendanceReportSettings(request, response) {
+  try {
+    if (!requireAdministrator(request, response)) return;
+    const session = readSession(request);
+    const body = JSON.parse((await readBody(request)) || "{}");
+    const recipients = normalizeRecipients(body.destinatarios);
+    const active = body.activo === true;
+    if (active && !recipients.length) {
+      sendJson(response, 400, { error: "Agrega al menos un correo destinatario para activar el reporte." });
+      return;
+    }
+    if (active && !gmailConfiguration(env).configured) {
+      sendJson(response, 503, {
+        code: "GMAIL_CONFIGURATION_REQUIRED",
+        error: "Configura primero la contrasena de aplicacion de Gmail en Netlify para activar el reporte."
+      });
+      return;
+    }
+    const payload = {
+      id: 1,
+      activo: active,
+      destinatarios: recipients,
+      hora_envio: normalizeReportTime(body.hora_envio),
+      zona_horaria: REPORT_TIME_ZONE,
+      asunto: normalizeReportSubject(body.asunto),
+      actualizado_por: Number(session?.id) || null
+    };
+    const result = await supabase
+      .from("configuracion_reporte_asistencia")
+      .upsert(payload, { onConflict: "id" })
+      .select("*")
+      .single();
+    if (result.error) throw result.error;
+    sendJson(response, 200, {
+      config: {
+        ...result.data,
+        hora_envio: String(result.data.hora_envio || "18:00").slice(0, 5)
+      }
+    });
+  } catch (error) {
+    const validationError = error instanceof SyntaxError ||
+      /correo|hora|asunto|destinatario/i.test(String(error?.message || ""));
+    handleAttendanceReportError(
+      response,
+      error,
+      "No se pudo guardar la configuracion del reporte.",
+      validationError ? 400 : 500
+    );
+  }
+}
+
+async function handleSendAttendanceReport(request, response) {
+  try {
+    if (!requireAdministrator(request, response)) return;
+    const session = readSession(request);
+    const body = JSON.parse((await readBody(request)) || "{}");
+    const config = await readAttendanceReportConfig(supabase);
+    const reportDate = String(
+      body.fecha || localDateTimeParts(new Date(), config.zona_horaria || REPORT_TIME_ZONE).date
+    ).trim();
+    const result = await sendAttendanceReport({
+      db: supabase,
+      envValues: env,
+      config,
+      reportDate,
+      type: "manual",
+      initiatedBy: Number(session?.id) || null
+    });
+    sendJson(response, 200, { report: result });
+  } catch (error) {
+    const validationError = error instanceof SyntaxError ||
+      /fecha|correo|destinatario|tipo de envio/i.test(String(error?.message || ""));
+    handleAttendanceReportError(
+      response,
+      error,
+      "No se pudo enviar el reporte de asistencia.",
+      validationError ? 400 : 500
+    );
+  }
+}
+
 async function handleReadActivityLogs(request, response) {
   try {
     const session = requireSessionRole(request, response, ["administrador", "operante", "jefe de equipo", "jefe de grupo"]);
@@ -1784,6 +1926,15 @@ export async function handleRequest(request, response, { serveFiles = true } = {
   const trainingProfileMatch = apiPath.match(/^\/api\/users\/(\d+)\/trainings\/?$/);
   const trainingCourseMatch = apiPath.match(/^\/api\/users\/(\d+)\/trainings\/(CAP\s+\d+)\/?$/i);
 
+  if (/^\/api\/health\/?$/.test(apiPath) && request.method === "GET") {
+    sendJson(response, 200, {
+      ok: true,
+      apiVersion: 3,
+      features: ["attendance-report"]
+    });
+    return;
+  }
+
   if (trainingProfileMatch && request.method === "GET") {
     await handleReadUserTrainingProfile(request, response, Number(trainingProfileMatch[1]));
     return;
@@ -1875,6 +2026,21 @@ export async function handleRequest(request, response, { serveFiles = true } = {
     return;
   }
 
+  if (/^\/api\/attendance-report\/settings\/?$/.test(apiPath) && request.method === "GET") {
+    await handleReadAttendanceReportSettings(request, response);
+    return;
+  }
+
+  if (/^\/api\/attendance-report\/settings\/?$/.test(apiPath) && request.method === "PUT") {
+    await handleUpdateAttendanceReportSettings(request, response);
+    return;
+  }
+
+  if (/^\/api\/attendance-report\/send\/?$/.test(apiPath) && request.method === "POST") {
+    await handleSendAttendanceReport(request, response);
+    return;
+  }
+
   if (request.url?.startsWith("/api/attendances") && request.method === "GET") {
     await handleReadAttendances(request, response);
     return;
@@ -1915,6 +2081,10 @@ export async function handleRequest(request, response, { serveFiles = true } = {
     return;
   }
 
+  if (apiPath === "/api" || apiPath.startsWith("/api/")) {
+    sendJson(response, 404, { error: "Ruta de API no encontrada." });
+    return;
+  }
   if (serveFiles) serveStatic(request, response);
   else sendJson(response, 404, { error: "Ruta de API no encontrada." });
 }

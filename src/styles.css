@@ -311,6 +311,10 @@ h2 {
   gap: 1rem;
 }
 
+.stack-compact {
+  gap: 0.55rem;
+}
+
 .brand-row {
   display: grid;
   grid-template-columns: 38px 1fr;
@@ -931,6 +935,75 @@ tbody tr:hover {
 
 .attendance-row small {
   color: var(--muted);
+}
+
+.attendance-report-panel {
+  overflow: hidden;
+}
+
+.attendance-report-intro {
+  display: flex;
+  gap: 0.9rem;
+  align-items: center;
+  padding: 1rem;
+  border: 1px solid rgba(45, 212, 191, 0.28);
+  border-radius: var(--radius);
+  background: rgba(45, 212, 191, 0.08);
+}
+
+.attendance-report-icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(244, 183, 94, 0.42);
+  border-radius: 12px;
+  background: rgba(244, 183, 94, 0.12);
+  color: var(--gold);
+}
+
+.attendance-report-icon svg {
+  width: 23px;
+}
+
+.attendance-report-intro strong {
+  color: var(--text-strong);
+  font-size: 1rem;
+}
+
+.attendance-report-intro p,
+.attendance-report-last-send {
+  margin: 0.28rem 0 0;
+  color: var(--muted);
+}
+
+.attendance-report-form {
+  margin-top: 0.2rem;
+}
+
+.attendance-report-last-send {
+  padding: 0.72rem 0.82rem;
+  border-left: 3px solid var(--accent);
+  background: rgba(222, 238, 226, 0.05);
+}
+
+.attendance-report-actions {
+  flex-wrap: wrap;
+}
+
+.attendance-report-history {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.4rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.attendance-report-history h3 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 1rem;
 }
 
 .record-toolbar span {
@@ -1832,6 +1905,10 @@ tbody tr:hover {
   .attendance-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .attendance-report-intro {
+    align-items: flex-start;
   }
 
   .worker-profile-overlay {

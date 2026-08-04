@@ -25,7 +25,10 @@ function apiSessionToken() {
 function apiEndpoints(path) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   const configuredOrigin = import.meta.env?.VITE_API_URL;
-  const origins = [configuredOrigin, "http://127.0.0.1:5180", "http://localhost:5180"]
+  const localOrigins = import.meta.env?.DEV
+    ? ["http://127.0.0.1:5180", "http://localhost:5180"]
+    : [];
+  const origins = [configuredOrigin, ...localOrigins]
     .filter(Boolean)
     .map((origin) => String(origin).replace(/\/+$/, ""));
 
@@ -33,6 +36,9 @@ function apiEndpoints(path) {
 }
 
 async function requestLocalApi(path, options = {}, config = {}) {
+  let sawNotFound = false;
+  let sawNonJson = false;
+  let sawNetworkFailure = false;
   for (const endpoint of apiEndpoints(path)) {
     try {
       const response = await fetch(endpoint, {
@@ -44,9 +50,15 @@ async function requestLocalApi(path, options = {}, config = {}) {
         }
       });
 
-      if (response.status === 404) continue;
+      if (response.status === 404) {
+        sawNotFound = true;
+        continue;
+      }
       const contentType = response.headers.get("content-type") || "";
-      if (!contentType.includes("application/json")) continue;
+      if (!contentType.includes("application/json")) {
+        sawNonJson = true;
+        continue;
+      }
 
       const payload = await response.json().catch(() => ({}));
       if (response.ok) return payload;
@@ -54,9 +66,25 @@ async function requestLocalApi(path, options = {}, config = {}) {
 
       throw new Error(payload.error || payload.message || `Error ${response.status} al consultar el backend local.`);
     } catch (error) {
-      if (error instanceof TypeError) continue;
+      if (error instanceof TypeError) {
+        sawNetworkFailure = true;
+        continue;
+      }
       throw error;
     }
+  }
+
+  if (config.requiredBackend) {
+    if (sawNotFound) {
+      throw new Error("El backend esta desactualizado y aun no incluye Notificaciones. Reinicialo localmente o publica las nuevas Functions de Netlify.");
+    }
+    if (sawNonJson) {
+      throw new Error("La ruta de Notificaciones esta devolviendo la pagina web en lugar de la API. Reinicia el backend y revisa la redireccion /api de Netlify.");
+    }
+    if (sawNetworkFailure) {
+      throw new Error("No se pudo conectar con el backend de Notificaciones. Ejecuta npm.cmd run dev o verifica que las Functions esten publicadas.");
+    }
+    throw new Error("El servicio de Notificaciones no esta disponible en este momento.");
   }
 
   return null;
@@ -533,6 +561,30 @@ export async function markAttendance(usuarioId, fecha, presente = true) {
   if (result.error) {
     ensureOk(await db().from(tableName).insert(payload));
   }
+}
+
+export async function getAttendanceReportSettings() {
+  const apiResult = await requestLocalApi("/api/attendance-report/settings", {}, { requiredBackend: true });
+  if (apiResult?.config) return apiResult;
+  throw new Error("El backend actual no incluye Notificaciones. Reinicia el proyecto con npm.cmd run dev; si esta publicado, despliega tambien las nuevas Functions de Netlify.");
+}
+
+export async function saveAttendanceReportSettings(payload) {
+  const apiResult = await requestLocalApi("/api/attendance-report/settings", {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  }, { requiredBackend: true });
+  if (apiResult?.config) return apiResult.config;
+  throw new Error("El backend actual no incluye Notificaciones. Reinicia el backend o publica las nuevas Functions de Netlify.");
+}
+
+export async function sendAttendanceReportNow(fecha) {
+  const apiResult = await requestLocalApi("/api/attendance-report/send", {
+    method: "POST",
+    body: JSON.stringify({ fecha })
+  }, { requiredBackend: true });
+  if (apiResult?.report) return apiResult.report;
+  throw new Error("El backend actual no incluye el envio de Notificaciones. Reinicia el backend o publica las nuevas Functions de Netlify.");
 }
 
 function activityLogInsertPayload(resourceName, payload) {
