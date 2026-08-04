@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, GraduationCap, LockKeyhole, Mail, Plus, RefreshCcw, Save, Send, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { CheckCircle2, Clock3, GraduationCap, LockKeyhole, Mail, Pencil, Plus, RefreshCcw, Save, Search, Send, Trash2, UsersRound, X } from "lucide-react";
 import {
+  createAttendanceReportSettings,
   createTask,
   createTienda,
   createUser,
+  deleteAttendanceReportSettings,
   deleteTask,
   deleteTienda,
   deleteUser,
@@ -17,12 +19,12 @@ import {
   listTiendas,
   listWorkers,
   markAttendance,
-  saveAttendanceReportSettings,
   selectUsers,
   sendAttendanceReportNow,
   setUserTrainingStatus,
   setTaskScoringRules,
   updateTask,
+  updateAttendanceReportSettings,
   updateTienda,
   updateUser
 } from "../lib/repository";
@@ -903,6 +905,7 @@ function ScoreFields({ form, setForm }) {
 
 function AttendancePanel() {
   const [selectedDate, setSelectedDate] = useState(todayLimaISO());
+  const [workerStatusFilter, setWorkerStatusFilter] = useState("activos");
   const [attendanceValues, setAttendanceValues] = useState({});
   const [status, setStatus] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -933,6 +936,19 @@ function AttendancePanel() {
     () => Object.fromEntries((data.current || []).map((row) => [row.usuario_id, row.estado === "Presente"])),
     [data.current]
   );
+
+  const workers = data.workers || [];
+  const activeWorkersCount = workers.filter((worker) => boolValue(worker.activo)).length;
+  const inactiveWorkersCount = workers.length - activeWorkersCount;
+  const visibleWorkers = workers.filter((worker) => {
+    if (workerStatusFilter === "todos") return true;
+    return workerStatusFilter === "activos" ? boolValue(worker.activo) : !boolValue(worker.activo);
+  });
+  const workerFilterOptions = [
+    { value: "activos", label: `Activos (${activeWorkersCount})` },
+    { value: "inactivos", label: `Inactivos (${inactiveWorkersCount})` },
+    { value: "todos", label: `Todos (${workers.length})` }
+  ];
 
   async function handleSave() {
     setStatus(null);
@@ -986,18 +1002,27 @@ function AttendancePanel() {
       <Panel title="Gestion de asistencia" eyebrow="Control diario">
         <div className="toolbar">
           <TextInput label="Fecha" type="date" value={selectedDate} onChange={setSelectedDate} />
+          <SelectInput
+            label="Mostrar trabajadores"
+            value={workerStatusFilter}
+            onChange={setWorkerStatusFilter}
+            options={workerFilterOptions}
+          />
           <Button variant="secondary" icon={RefreshCcw} onClick={reload}>Actualizar</Button>
         </div>
         <StatusAlert status={status} />
         {loading ? <LoadingBlock /> : null}
         {error ? <Alert type="error">{error}</Alert> : null}
-        {!loading && !(data.workers || []).length ? <Alert>No hay trabajadores registrados.</Alert> : null}
+        {!loading && !workers.length ? <Alert>No hay trabajadores registrados.</Alert> : null}
+        {!loading && workers.length && !visibleWorkers.length ? (
+          <Alert>No hay trabajadores {workerStatusFilter === "activos" ? "activos" : "inactivos"} para mostrar.</Alert>
+        ) : null}
         <div className="attendance-list">
-          {(data.workers || []).map((worker) => (
+          {visibleWorkers.map((worker) => (
             <label key={worker.id} className="attendance-row">
               <span>
                 <strong>{worker.nombre || "Sin nombre"}</strong>
-                <small>{worker.email}</small>
+                <small>{worker.email} · {boolValue(worker.activo) ? "Activo" : "Inactivo"}</small>
               </span>
               <input
                 type="checkbox"
@@ -1022,92 +1047,85 @@ function AttendancePanel() {
   );
 }
 
+function emptyNotificationForm() {
+  return {
+    nombre: "",
+    activo: false,
+    destinatarios: "",
+    hora_envio: "18:00",
+    asunto: "Reporte diario de asistencia",
+    incluir_todos_activos: true,
+    usuario_ids: []
+  };
+}
+
+function notificationRecipients(value) {
+  const source = Array.isArray(value) ? value : String(value || "").split(/[\n,;]+/);
+  return Array.from(new Set(source.map((email) => String(email).trim().toLowerCase()).filter(Boolean)));
+}
+
+function notificationUserIds(config) {
+  const source = Array.isArray(config?.usuario_ids) ? config.usuario_ids : [];
+  return Array.from(new Set(source.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)));
+}
+
+function notificationIncludesAllWorkers(config) {
+  return config?.incluir_todos_activos === undefined ? true : boolValue(config.incluir_todos_activos);
+}
+
 function NotificationsPanel() {
   const [reportDate, setReportDate] = useState(todayLimaISO());
+  const [editorId, setEditorId] = useState(null);
+  const [form, setForm] = useState(emptyNotificationForm);
+  const [workerSearch, setWorkerSearch] = useState("");
+  const [excludedInactiveCount, setExcludedInactiveCount] = useState(0);
+  const [status, setStatus] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [busyAction, setBusyAction] = useState("");
+  const editorRef = useRef(null);
   const { data, loading, error, reload } = useAsyncData(
     getAttendanceReportSettings,
     [],
     {
-      config: null,
+      configs: [],
+      workers: [],
       history: [],
       gmail: { sender: "calzado661@gmail.com", configured: false }
     }
   );
-  const [form, setForm] = useState({
-    activo: false,
-    destinatarios: "",
-    hora_envio: "18:00",
-    asunto: "Reporte diario de asistencia"
+
+  const configs = data?.configs || [];
+  const activeWorkers = (data?.workers || []).filter((worker) => boolValue(worker.activo));
+  const activeWorkerIds = new Set(activeWorkers.map((worker) => Number(worker.id)));
+  const gmailConfigured = Boolean(data?.gmail?.configured);
+  const controlsDisabled = loading || Boolean(error);
+  const selectedUserIds = new Set((form.usuario_ids || []).map(String));
+  const normalizedWorkerSearch = workerSearch.trim().toLocaleLowerCase("es");
+  const visibleWorkers = activeWorkers.filter((worker) => {
+    if (!normalizedWorkerSearch) return true;
+    return `${worker.nombre || ""} ${worker.email || ""}`.toLocaleLowerCase("es").includes(normalizedWorkerSearch);
   });
-  const [status, setStatus] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [sending, setSending] = useState(false);
-
-  useEffect(() => {
-    if (!data?.config) return;
-    setForm({
-      activo: Boolean(data.config.activo && data?.gmail?.configured),
-      destinatarios: (data.config.destinatarios || []).join("\n"),
-      hora_envio: String(data.config.hora_envio || "18:00").slice(0, 5),
-      asunto: data.config.asunto || "Reporte diario de asistencia"
-    });
-  }, [data?.config, data?.gmail?.configured]);
-
-  function settingsPayload({ requireRecipients = false } = {}) {
-    const recipients = Array.from(new Set(
-      String(form.destinatarios || "")
-        .split(/[\n,;]+/)
-        .map((email) => email.trim().toLowerCase())
-        .filter(Boolean)
-    ));
-    const invalidEmail = recipients.find((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
-    if (invalidEmail) throw new Error(`El correo ${invalidEmail} no es valido.`);
-    if (recipients.length > 20) throw new Error("Solo se permiten hasta 20 correos destinatarios.");
-    if ((form.activo || requireRecipients) && !recipients.length) {
-      throw new Error("Agrega al menos un correo destinatario antes de continuar.");
-    }
-    return {
-      activo: Boolean(form.activo && data?.gmail?.configured),
-      destinatarios: recipients,
-      hora_envio: form.hora_envio,
-      asunto: form.asunto
-    };
-  }
-
-  async function handleSaveSettings() {
-    setStatus(null);
-    setSaving(true);
-    try {
-      await saveAttendanceReportSettings(settingsPayload());
-      setStatus({ type: "success", message: "Programacion del reporte guardada correctamente." });
-      reload();
-    } catch (err) {
-      setStatus({ type: "error", message: friendlyError(err) });
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function handleSendNow() {
-    setStatus(null);
-    setSending(true);
-    let sendStarted = false;
-    try {
-      await saveAttendanceReportSettings(settingsPayload({ requireRecipients: true }));
-      sendStarted = true;
-      const result = await sendAttendanceReportNow(reportDate);
-      setStatus({
-        type: "success",
-        message: `Reporte enviado correctamente a ${result.recipients.length} correo(s), con ${result.attendeesCount} asistente(s).`
-      });
-    } catch (err) {
-      setStatus({ type: "error", message: friendlyError(err) });
-    } finally {
-      setSending(false);
-      if (sendStarted) reload();
-    }
-  }
-
+  const activeConfigs = configs.filter((config) => boolValue(config.activo));
+  const sortedActiveConfigs = [...activeConfigs]
+    .sort((left, right) => String(left.hora_envio || "23:59").localeCompare(String(right.hora_envio || "23:59")));
+  const currentLimaTime = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Lima",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).format(new Date());
+  const todayLima = todayLimaISO();
+  const unsentToday = sortedActiveConfigs.filter((config) => String(config.ultimo_envio_fecha || "") !== todayLima);
+  const overdueSchedule = unsentToday.find((config) => String(config.hora_envio || "23:59").slice(0, 5) <= currentLimaTime);
+  const futureSchedule = unsentToday.find((config) => String(config.hora_envio || "23:59").slice(0, 5) > currentLimaTime);
+  const nextScheduleLabel = overdueSchedule
+    ? "Ahora"
+    : futureSchedule
+      ? String(futureSchedule.hora_envio || "").slice(0, 5)
+      : sortedActiveConfigs[0]
+        ? `${String(sortedActiveConfigs[0].hora_envio || "").slice(0, 5)} mañana`
+        : "--:--";
+  const configNameById = Object.fromEntries(configs.map((config) => [String(config.id), config.nombre || `Programacion ${config.id}`]));
   const reportStatusLabels = {
     procesando: "Procesando",
     enviando: "Enviando",
@@ -1117,130 +1135,495 @@ function NotificationsPanel() {
     revision: "Requiere revision"
   };
   const historyRows = (data?.history || []).map((item) => ({
+    Programacion: item.programacion_nombre || item.configuracion_nombre || item.configuracion?.nombre || configNameById[String(item.configuracion_id)] || `#${item.configuracion_id}`,
     Fecha: item.fecha_reporte,
     Envio: item.tipo_envio === "automatico" ? "Automatico" : "Manual",
     Estado: reportStatusLabels[item.estado] || item.estado,
-    Destinatarios: (item.destinatarios || []).join(", "),
+    Destinatarios: notificationRecipients(item.destinatarios).join(", "),
     Asistentes: item.asistentes_count ?? "",
     Intentos: item.intentos ?? 1,
     "Fecha de envio": item.enviado_en ? formatDateTimeLima(item.enviado_en) : "",
     Detalle: item.detalle_error || ""
   }));
-  const gmailConfigured = Boolean(data?.gmail?.configured);
-  const controlsDisabled = loading || Boolean(error);
-  const hasRecipients = String(form.destinatarios || "").split(/[\n,;]+/).some((email) => email.trim());
+
+  useEffect(() => {
+    if (!editorId) return;
+    const frame = window.requestAnimationFrame(() => {
+      editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [editorId]);
+
+  function openCreateEditor() {
+    setStatus(null);
+    setWorkerSearch("");
+    setExcludedInactiveCount(0);
+    setForm(emptyNotificationForm());
+    setEditorId("new");
+  }
+
+  function openEditEditor(config) {
+    setStatus(null);
+    setWorkerSearch("");
+    const configuredUserIds = notificationUserIds(config);
+    const activeSelectedUserIds = configuredUserIds.filter((id) => activeWorkerIds.has(id));
+    setExcludedInactiveCount(configuredUserIds.length - activeSelectedUserIds.length);
+    setForm({
+      nombre: config.nombre || `Programacion ${config.id}`,
+      activo: boolValue(config.activo),
+      destinatarios: notificationRecipients(config.destinatarios).join("\n"),
+      hora_envio: String(config.hora_envio || "18:00").slice(0, 5),
+      asunto: config.asunto || "Reporte diario de asistencia",
+      incluir_todos_activos: notificationIncludesAllWorkers(config),
+      usuario_ids: activeSelectedUserIds.map(String)
+    });
+    setEditorId(String(config.id));
+  }
+
+  function closeEditor() {
+    setEditorId(null);
+    setWorkerSearch("");
+    setExcludedInactiveCount(0);
+    setForm(emptyNotificationForm());
+  }
+
+  function toggleWorker(workerId, checked) {
+    const normalizedId = String(workerId);
+    setForm((current) => ({
+      ...current,
+      usuario_ids: checked
+        ? Array.from(new Set([...(current.usuario_ids || []).map(String), normalizedId]))
+        : (current.usuario_ids || []).map(String).filter((id) => id !== normalizedId)
+    }));
+  }
+
+  function settingsPayload() {
+    const nombre = String(form.nombre || "").trim();
+    const asunto = String(form.asunto || "").trim();
+    const recipients = notificationRecipients(form.destinatarios);
+    const userIds = (form.usuario_ids || [])
+      .map(Number)
+      .filter((id) => Number.isInteger(id) && activeWorkerIds.has(id));
+    if (!nombre) throw new Error("Escribe un nombre para la programacion.");
+    if (nombre.length > 100) throw new Error("El nombre de la programacion admite hasta 100 caracteres.");
+    if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(form.hora_envio || ""))) {
+      throw new Error("Selecciona una hora de envio valida.");
+    }
+    if (!asunto) throw new Error("Escribe el asunto del correo.");
+    if (asunto.length > 160) throw new Error("El asunto admite hasta 160 caracteres.");
+    const invalidEmail = recipients.find((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
+    if (invalidEmail) throw new Error(`El correo ${invalidEmail} no es valido.`);
+    if (recipients.length > 20) throw new Error("Solo se permiten hasta 20 correos destinatarios.");
+    if (form.activo && !recipients.length) throw new Error("Agrega al menos un correo destinatario para activar la programacion.");
+    if (form.activo && !gmailConfigured) throw new Error("Configura Gmail antes de activar la programacion.");
+    if (!form.incluir_todos_activos && !userIds.length) {
+      throw new Error("Selecciona al menos un trabajador o incluye a todos los activos.");
+    }
+    return {
+      nombre,
+      activo: Boolean(form.activo),
+      destinatarios: recipients,
+      hora_envio: form.hora_envio,
+      asunto,
+      incluir_todos_activos: Boolean(form.incluir_todos_activos),
+      usuario_ids: form.incluir_todos_activos ? [] : userIds
+    };
+  }
+
+  async function handleSaveSettings(event) {
+    event.preventDefault();
+    setStatus(null);
+    setSaving(true);
+    try {
+      const payload = settingsPayload();
+      if (editorId === "new") await createAttendanceReportSettings(payload);
+      else await updateAttendanceReportSettings(editorId, payload);
+      const action = editorId === "new" ? "creada" : "actualizada";
+      closeEditor();
+      setStatus({ type: "success", message: `Programacion ${action} correctamente.` });
+      reload();
+    } catch (err) {
+      setStatus({ type: "error", message: friendlyError(err) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSendNow(config) {
+    setStatus(null);
+    setBusyAction(`send:${config.id}`);
+    let sendStarted = false;
+    try {
+      sendStarted = true;
+      const result = await sendAttendanceReportNow(config.id, reportDate);
+      const recipientsCount = Array.isArray(result.recipients)
+        ? result.recipients.length
+        : notificationRecipients(config.destinatarios).length;
+      setStatus({
+        type: "success",
+        message: `${config.nombre || "El reporte"} se envio a ${recipientsCount} correo(s), con ${result.attendeesCount ?? 0} asistente(s).`
+      });
+    } catch (err) {
+      setStatus({ type: "error", message: friendlyError(err) });
+    } finally {
+      setBusyAction("");
+      if (sendStarted) reload();
+    }
+  }
+
+  async function handleDelete(config) {
+    const configName = config.nombre || `Programacion ${config.id}`;
+    if (!window.confirm(`Se eliminara la programacion "${configName}". Su historial se conservara. ¿Deseas continuar?`)) return;
+    setStatus(null);
+    setBusyAction(`delete:${config.id}`);
+    try {
+      await deleteAttendanceReportSettings(config.id);
+      if (String(editorId) === String(config.id)) closeEditor();
+      setStatus({ type: "success", message: `La programacion ${configName} fue eliminada.` });
+      reload();
+    } catch (err) {
+      setStatus({ type: "error", message: friendlyError(err) });
+    } finally {
+      setBusyAction("");
+    }
+  }
 
   return (
-    <Panel title="Reporte automatico por correo" eyebrow="Notificacion diaria" className="attendance-report-panel">
-      <div className="attendance-report-intro">
-        <span className="attendance-report-icon"><Mail /></span>
-        <div>
-          <strong>Recibe cada dia la lista de personas que asistieron</strong>
-          <p>El correo incluye el resumen, el detalle de asistentes y un archivo CSV. La hora se interpreta en America/Lima.</p>
-        </div>
-      </div>
-
-      {loading ? <LoadingBlock /> : null}
-      {error ? (
-        <div className="stack stack-compact">
-          <Alert type="error">{error}</Alert>
-          <div className="form-actions">
-            <Button variant="secondary" icon={RefreshCcw} onClick={reload}>Reintentar carga</Button>
+    <div className="stack notification-page">
+      <Panel
+        title="Notificaciones de asistencia"
+        eyebrow="Reportes por correo"
+        className="attendance-report-panel"
+        actions={(
+          <Button
+            type="button"
+            icon={Plus}
+            disabled={controlsDisabled || saving || Boolean(busyAction)}
+            aria-controls="notification-schedule-editor"
+            aria-expanded={Boolean(editorId)}
+            onClick={openCreateEditor}
+          >
+            Nueva programacion
+          </Button>
+        )}
+      >
+        <div className="attendance-report-intro notification-hero">
+          <span className="attendance-report-icon"><Mail aria-hidden="true" /></span>
+          <div className="notification-hero-copy">
+            <strong>Envia automaticamente la lista de personas que asistieron</strong>
+            <p>Los reportes incluyen resumen, detalle y archivo CSV. Todos los horarios se interpretan en America/Lima.</p>
           </div>
+          <span className={`notification-gmail-status ${gmailConfigured ? "ready" : "pending"}`}>
+            {gmailConfigured ? "Credenciales cargadas" : "Gmail pendiente"}
+          </span>
+        </div>
+
+        {loading ? <LoadingBlock /> : null}
+        {error ? (
+          <div className="stack stack-compact" role="alert">
+            <Alert type="error">{error}</Alert>
+            <div className="form-actions">
+              <Button type="button" variant="secondary" icon={RefreshCcw} onClick={reload}>Reintentar carga</Button>
+            </div>
+          </div>
+        ) : null}
+        <div className="notification-live-region" aria-live="polite">
+          <StatusAlert status={status} />
+          {status ? (
+            <button
+              type="button"
+              className="notification-status-close"
+              aria-label="Cerrar mensaje"
+              onClick={() => setStatus(null)}
+            >
+              <X aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
+
+        {!loading && !error && !gmailConfigured ? (
+          <Alert type="error">
+            Falta configurar GMAIL_APP_PASSWORD como variable privada de Netlify. Puedes crear borradores, pero no activarlos ni enviarlos.
+          </Alert>
+        ) : null}
+        {!loading && !error && gmailConfigured ? (
+          <Alert type="success">Las credenciales de Gmail estan cargadas para enviar desde {data.gmail.sender}.</Alert>
+        ) : null}
+
+        <div className="notification-toolbar">
+          <TextInput
+            label="Fecha para envios manuales"
+            type="date"
+            value={reportDate}
+            onChange={setReportDate}
+            disabled={controlsDisabled || Boolean(busyAction)}
+            hint="Los botones Enviar ahora usan esta fecha. No modifica la programacion."
+          />
+          <Button type="button" variant="secondary" icon={RefreshCcw} disabled={controlsDisabled || Boolean(busyAction)} onClick={reload}>
+            Actualizar
+          </Button>
+        </div>
+
+        {!loading && !error ? (
+          <div className="metrics-row notification-metrics" aria-label="Resumen de programaciones">
+            <Metric label="Programaciones" value={configs.length} />
+            <Metric label="Activas" value={activeConfigs.length} tone="accent" />
+            <Metric label="Proximo horario" value={nextScheduleLabel} />
+          </div>
+        ) : null}
+      </Panel>
+
+      {editorId ? (
+        <div id="notification-schedule-editor" ref={editorRef}>
+          <Panel
+          title={editorId === "new" ? "Nueva programacion" : "Editar programacion"}
+          eyebrow="Configuracion"
+          className="notification-editor-panel"
+        >
+          <form className="stack" onSubmit={handleSaveSettings} aria-label={editorId === "new" ? "Crear programacion" : "Editar programacion"}>
+            <div className="form-grid notification-editor-form">
+              <TextInput
+                label="Nombre de la programacion"
+                value={form.nombre}
+                onChange={(nombre) => setForm({ ...form, nombre })}
+                disabled={saving}
+                maxLength={100}
+                required
+                autoFocus
+                placeholder="Ejemplo: Reporte para Recursos Humanos"
+              />
+              <TextInput
+                label="Hora diaria de envio"
+                type="time"
+                value={form.hora_envio}
+                onChange={(hora_envio) => setForm({ ...form, hora_envio })}
+                disabled={saving}
+                required
+                hint="Zona horaria America/Lima."
+              />
+              <TextInput
+                label="Asunto del correo"
+                value={form.asunto}
+                onChange={(asunto) => setForm({ ...form, asunto })}
+                disabled={saving}
+                maxLength={160}
+                required
+              />
+              <CheckboxInput
+                label="Activar envio automatico diario"
+                checked={form.activo}
+                onChange={(activo) => {
+                  if (activo && !gmailConfigured) {
+                    setStatus({ type: "error", message: "Configura Gmail antes de activar una programacion." });
+                    return;
+                  }
+                  setForm({ ...form, activo });
+                }}
+                disabled={saving}
+                hint={gmailConfigured ? "Se enviara una sola vez por fecha." : "Gmail aun no esta configurado."}
+              />
+              <TextArea
+                label="Correos destinatarios"
+                value={form.destinatarios}
+                onChange={(destinatarios) => setForm({ ...form, destinatarios })}
+                disabled={saving}
+                rows={4}
+                placeholder="correo1@gmail.com\ncorreo2@empresa.com"
+                hint="Uno por linea o separados por comas. Maximo 20."
+              />
+              <CheckboxInput
+                label="Incluir a todos los trabajadores activos"
+                checked={form.incluir_todos_activos}
+                onChange={(incluir_todos_activos) => setForm({ ...form, incluir_todos_activos })}
+                disabled={saving}
+                hint="Desactivalo para elegir trabajadores especificos."
+              />
+            </div>
+
+            {!form.incluir_todos_activos ? (
+              <fieldset className="notification-worker-picker" disabled={saving}>
+                <legend>Trabajadores incluidos en el reporte</legend>
+                {excludedInactiveCount ? (
+                  <Alert type="warning">
+                    {excludedInactiveCount} trabajador(es) seleccionados fueron desactivados. No apareceran en el reporte y se quitaran al guardar.
+                  </Alert>
+                ) : null}
+                <div className="notification-worker-picker-toolbar">
+                  <label className="field notification-worker-search">
+                    <span className="field-label">Buscar trabajador activo</span>
+                    <span className="search-input">
+                      <Search aria-hidden="true" />
+                      <input
+                        className="input"
+                        type="search"
+                        value={workerSearch}
+                        onChange={(event) => setWorkerSearch(event.target.value)}
+                        placeholder="Nombre o correo"
+                      />
+                    </span>
+                  </label>
+                  <div className="notification-selection-actions">
+                    <span>{selectedUserIds.size} seleccionado(s)</span>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      icon={UsersRound}
+                      onClick={() => setForm({ ...form, usuario_ids: activeWorkers.map((worker) => String(worker.id)) })}
+                    >
+                      Seleccionar todos
+                    </Button>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => setForm({ ...form, usuario_ids: [] })}>
+                      Limpiar
+                    </Button>
+                  </div>
+                </div>
+                {!activeWorkers.length ? <Alert>No hay trabajadores activos disponibles.</Alert> : null}
+                {activeWorkers.length && !visibleWorkers.length ? <Alert>No hay coincidencias para esta busqueda.</Alert> : null}
+                <div className="notification-worker-list">
+                  {visibleWorkers.map((worker) => (
+                    <label key={worker.id} className="notification-worker-option">
+                      <input
+                        type="checkbox"
+                        checked={selectedUserIds.has(String(worker.id))}
+                        onChange={(event) => toggleWorker(worker.id, event.target.checked)}
+                      />
+                      <span>
+                        <strong>{worker.nombre || "Sin nombre"}</strong>
+                        <small>{worker.email || "Sin correo"}</small>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            ) : null}
+
+            <div className="form-actions notification-editor-actions">
+              <Button type="button" variant="ghost" disabled={saving} onClick={closeEditor}>Cancelar</Button>
+              <Button type="submit" icon={Save} loading={saving} disabled={Boolean(busyAction)}>
+                {editorId === "new" ? "Crear programacion" : "Guardar cambios"}
+              </Button>
+            </div>
+          </form>
+          </Panel>
         </div>
       ) : null}
-      <StatusAlert status={status} />
 
-      {!loading && !error && !gmailConfigured ? (
-        <Alert type="error">
-          Falta configurar GMAIL_APP_PASSWORD como variable privada de Netlify. Puedes guardar destinatarios y horario, pero el reporte automatico permanecera desactivado.
-        </Alert>
-      ) : null}
+      <Panel title="Programaciones" eyebrow="Envios automaticos">
+        {loading ? <LoadingBlock label="Cargando programaciones" /> : null}
+        {error ? <Alert type="error">No se pudieron cargar las programaciones.</Alert> : null}
+        {!loading && !error && !configs.length ? (
+          <div className="empty-state notification-empty-state">
+            <Mail aria-hidden="true" />
+            <span>Todavia no hay programaciones. Crea la primera para comenzar.</span>
+          </div>
+        ) : null}
+        {!loading && !error ? <div className="notification-schedule-grid">
+          {configs.map((config) => {
+            const recipients = notificationRecipients(config.destinatarios);
+            const configuredUserIds = notificationUserIds(config);
+            const userIds = configuredUserIds.filter((id) => activeWorkerIds.has(id));
+            const excludedUsers = configuredUserIds.length - userIds.length;
+            const includesAllWorkers = notificationIncludesAllWorkers(config);
+            const isActive = boolValue(config.activo);
+            const isSending = busyAction === `send:${config.id}`;
+            const isDeleting = busyAction === `delete:${config.id}`;
+            const cardBusy = controlsDisabled || Boolean(busyAction) || saving;
+            return (
+              <article key={config.id} className={`notification-schedule-card ${isActive ? "active" : "paused"}`}>
+                <header className="notification-card-header">
+                  <div className="notification-card-title">
+                    <span className="notification-card-icon"><Mail aria-hidden="true" /></span>
+                    <div>
+                      <small>Programacion #{config.id}</small>
+                      <h3>{config.nombre || `Programacion ${config.id}`}</h3>
+                    </div>
+                  </div>
+                  <span className={`notification-status-badge ${isActive ? "active" : "paused"}`}>
+                    {isActive ? "Activa" : "Pausada"}
+                  </span>
+                </header>
 
-      {!loading && !error && gmailConfigured ? (
-        <Alert type="success">Gmail esta listo para enviar desde {data.gmail.sender}.</Alert>
-      ) : null}
+                <div className="notification-card-time">
+                  <Clock3 aria-hidden="true" />
+                  <strong>{String(config.hora_envio || "18:00").slice(0, 5)}</strong>
+                  <span>America/Lima</span>
+                </div>
 
-      <div className="form-grid attendance-report-form">
-        <TextInput
-          label="Correo remitente"
-          value={data?.gmail?.sender || "calzado661@gmail.com"}
-          onChange={() => {}}
-          disabled
-          hint="Cuenta Gmail usada por el servidor."
-        />
-        <TextInput
-          label="Hora diaria de envio"
-          type="time"
-          value={form.hora_envio}
-          onChange={(hora_envio) => setForm({ ...form, hora_envio })}
-          disabled={controlsDisabled}
-          hint="La tarea programada revisa esta hora cada minuto."
-        />
-        <TextInput
-          label="Asunto del correo"
-          value={form.asunto}
-          onChange={(asunto) => setForm({ ...form, asunto })}
-          disabled={controlsDisabled}
-          maxLength={160}
-        />
-        <TextInput
-          label="Fecha para el envio manual"
-          type="date"
-          value={reportDate}
-          onChange={setReportDate}
-          disabled={controlsDisabled}
-          hint="El envio automatico siempre usa la fecha del dia."
-        />
-        <CheckboxInput
-          label="Activar envio automatico diario"
-          checked={form.activo}
-          onChange={(activo) => setForm({ ...form, activo })}
-          disabled={controlsDisabled || !gmailConfigured}
-          hint={gmailConfigured ? "Solo se enviara una vez por fecha." : "Configura Gmail para poder activarlo."}
-        />
-        <TextArea
-          label="Correos destinatarios"
-          value={form.destinatarios}
-          onChange={(destinatarios) => setForm({ ...form, destinatarios })}
-          disabled={controlsDisabled}
-          rows={4}
-          placeholder="correo1@gmail.com\ncorreo2@empresa.com"
-          hint="Escribe un correo por linea o separalos con comas. Maximo 20."
-        />
-      </div>
+                <dl className="notification-card-details">
+                  <div>
+                    <dt>Asunto</dt>
+                    <dd>{config.asunto || "Reporte diario de asistencia"}</dd>
+                  </div>
+                  <div>
+                    <dt>Destinatarios</dt>
+                    <dd title={recipients.join(", ")}>
+                      {recipients.length ? `${recipients.slice(0, 2).join(", ")}${recipients.length > 2 ? ` y ${recipients.length - 2} mas` : ""}` : "Sin destinatarios"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Alcance</dt>
+                    <dd>
+                      {includesAllWorkers
+                        ? `Todos los activos (${activeWorkers.length})`
+                        : `${userIds.length} trabajador(es) activo(s)${excludedUsers ? ` · ${excludedUsers} inactivo(s) excluido(s)` : ""}`}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Ultimo envio</dt>
+                    <dd>{config.ultimo_envio_en ? formatDateTimeLima(config.ultimo_envio_en) : "Todavia no enviado"}</dd>
+                  </div>
+                </dl>
 
-      {data?.config?.ultimo_envio_en ? (
-        <p className="attendance-report-last-send">
-          Ultimo reporte enviado: <strong>{formatDateTimeLima(data.config.ultimo_envio_en)}</strong>.
-        </p>
-      ) : null}
+                <div className="notification-card-actions">
+                  <Button
+                    type="button"
+                    icon={Send}
+                    loading={isSending}
+                    disabled={cardBusy || !gmailConfigured || !recipients.length || !reportDate || (!includesAllWorkers && !userIds.length)}
+                    aria-label={`Enviar ahora ${config.nombre || `programacion ${config.id}`}`}
+                    onClick={() => handleSendNow(config)}
+                  >
+                    Enviar ahora
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    icon={Pencil}
+                    disabled={cardBusy}
+                    aria-controls="notification-schedule-editor"
+                    aria-expanded={String(editorId) === String(config.id)}
+                    aria-label={`Editar ${config.nombre || `programacion ${config.id}`}`}
+                    onClick={() => openEditEditor(config)}
+                  >
+                    Editar
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="danger"
+                    icon={Trash2}
+                    loading={isDeleting}
+                    disabled={cardBusy}
+                    aria-label={`Eliminar ${config.nombre || `programacion ${config.id}`}`}
+                    onClick={() => handleDelete(config)}
+                  >
+                    Eliminar
+                  </Button>
+                </div>
+              </article>
+            );
+          })}
+        </div> : null}
+      </Panel>
 
-      <div className="form-actions attendance-report-actions">
-        <Button
-          icon={Save}
-          loading={saving}
-          disabled={controlsDisabled || sending}
-          onClick={handleSaveSettings}
-        >
-          Guardar programacion
-        </Button>
-        <Button
-          variant="secondary"
-          icon={Send}
-          loading={sending}
-          disabled={controlsDisabled || saving || !gmailConfigured || !hasRecipients}
-          onClick={handleSendNow}
-        >
-          Guardar y enviar ahora el reporte del {reportDate}
-        </Button>
-      </div>
-
-      <div className="attendance-report-history">
-        <h3>Historial de envios</h3>
-        <DataTable rows={historyRows} empty="Todavia no se enviaron reportes de asistencia." compact />
-      </div>
-    </Panel>
+      <Panel title="Historial de envios" eyebrow="Seguimiento">
+        {loading ? <LoadingBlock label="Cargando historial" /> : null}
+        {error ? <Alert type="error">No se pudo cargar el historial de envios.</Alert> : null}
+        {!loading && !error ? (
+          <DataTable rows={historyRows} empty="Todavia no se enviaron reportes de asistencia." compact />
+        ) : null}
+      </Panel>
+    </div>
   );
 }
 

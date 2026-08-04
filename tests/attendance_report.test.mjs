@@ -7,8 +7,13 @@ import {
   normalizeRecipients,
   normalizeReportSubject,
   normalizeReportTime,
+  readActiveAttendanceWorkers,
+  readAttendanceReportConfig,
+  readAttendanceReportConfigs,
+  readPresentAttendances,
   reportDue,
   runDueAttendanceReport,
+  runDueAttendanceReports,
   sendAttendanceReport
 } from "../services/attendance_report.mjs";
 
@@ -55,6 +60,11 @@ class FakeQuery {
     return this;
   }
 
+  is(field, value) {
+    this.filters.push((row) => value === null ? row[field] == null : row[field] === value);
+    return this;
+  }
+
   order() {
     return this;
   }
@@ -80,9 +90,7 @@ class FakeQuery {
 
   async execute() {
     const state = this.database.state;
-    const tableRows = this.table === "configuracion_reporte_asistencia"
-      ? [state.config]
-      : state[this.table] || [];
+    const tableRows = state[this.table] || [];
 
     if (this.action === "insert") {
       const inserted = {
@@ -97,7 +105,10 @@ class FakeQuery {
 
     let rows = tableRows.filter((row) => this.filters.every((filter) => filter(row)));
     if (this.action === "update") {
-      if (state.failSentConfirmation && this.table === "reporte_asistencia_envios" && this.payload.estado === "enviado") {
+      const confirmationRow = rows[0];
+      const confirmationFails = state.failSentConfirmation === true ||
+        state.failSentConfirmationIds?.has(Number(confirmationRow?.configuracion_id));
+      if (confirmationFails && this.table === "reporte_asistencia_envios" && this.payload.estado === "enviado") {
         return { data: null, error: { code: "TEST_DB_FAILURE", message: "fallo al confirmar" } };
       }
       rows.forEach((row) => Object.assign(row, this.payload, { updated_at: new Date().toISOString() }));
@@ -109,18 +120,31 @@ class FakeQuery {
   }
 }
 
+function reportConfig(id, changes = {}) {
+  return {
+    id,
+    nombre: `Programacion ${id}`,
+    activo: true,
+    destinatarios: [`reporte${id}@example.com`],
+    hora_envio: "00:00",
+    zona_horaria: "America/Lima",
+    asunto: "Reporte diario de asistencia",
+    incluir_todos_activos: true,
+    eliminado_en: null,
+    ultimo_envio_fecha: null,
+    ultimo_envio_en: null,
+    ...changes
+  };
+}
+
 function fakeDatabase(overrides = {}) {
+  const defaultConfigs = [reportConfig(1, {
+    nombre: "Reporte principal",
+    destinatarios: ["reporte1@example.com", "reporte2@example.com"]
+  })];
   const state = {
-    config: {
-      id: 1,
-      activo: true,
-      destinatarios: ["reporte1@example.com", "reporte2@example.com"],
-      hora_envio: "00:00",
-      zona_horaria: "America/Lima",
-      asunto: "Reporte diario de asistencia",
-      ultimo_envio_fecha: null,
-      ultimo_envio_en: null
-    },
+    configuracion_reporte_asistencia: defaultConfigs,
+    configuracion_reporte_asistencia_usuarios: [],
     asistencias: [{
       id: 1,
       usuario_id: 8,
@@ -128,28 +152,40 @@ function fakeDatabase(overrides = {}) {
       estado: "Presente",
       created_at: "2026-08-04T14:30:00Z"
     }],
-    usuarios: [{ id: 8, nombre: "Ana Perez", email: "ana@example.com", rol: "operante" }],
+    usuarios: [{ id: 8, nombre: "Ana Perez", email: "ana@example.com", rol: "operante", activo: true }],
     reporte_asistencia_envios: [],
     nextLogId: 1,
     failSentConfirmation: false,
+    failSentConfirmationIds: new Set(),
     rpcClaim: { envio_id: 50, reclamado: true, motivo: "nuevo", intento: 1 },
+    rpcClaimsByConfig: {},
+    rpcCalls: [],
     ...overrides
   };
+  state.config = state.configuracion_reporte_asistencia[0];
   const database = {
     state,
     from(table) {
       return new FakeQuery(database, table);
     },
-    async rpc(name) {
+    async rpc(name, params) {
       assert.equal(name, "reclamar_reporte_asistencia");
-      const claim = state.rpcClaim;
+      state.rpcCalls.push({ name, params });
+      const configId = Number(params.p_configuracion_id);
+      const config = state.configuracion_reporte_asistencia.find((item) => Number(item.id) === configId);
+      const claim = state.rpcClaimsByConfig[configId] || {
+        ...state.rpcClaim,
+        envio_id: Number(state.rpcClaim.envio_id || 50) + configId - 1
+      };
       if (claim.reclamado && !state.reporte_asistencia_envios.some((row) => row.id === claim.envio_id)) {
         state.reporte_asistencia_envios.push({
           id: claim.envio_id,
-          fecha_reporte: "2026-08-04",
+          configuracion_id: configId,
+          programacion_nombre: config?.nombre || "",
+          fecha_reporte: params.p_fecha_reporte,
           tipo_envio: "automatico",
           estado: "procesando",
-          destinatarios: state.config.destinatarios,
+          destinatarios: params.p_destinatarios,
           intentos: claim.intento
         });
       }
@@ -258,6 +294,7 @@ test("envia con copia oculta, adjunta CSV y confirma el historial", async () => 
   assert.equal(sentMessages[0].attachments[0].filename, "asistencia_2026-08-04.csv");
   assert.equal(database.state.reporte_asistencia_envios[0].estado, "enviado");
   assert.equal(database.state.reporte_asistencia_envios[0].asistentes_count, 1);
+  assert.equal(database.state.reporte_asistencia_envios[0].programacion_nombre, "Reporte principal");
 });
 
 test("registra error antes de Gmail y conserva el conteo para reintentar", async () => {
@@ -315,6 +352,8 @@ test("un reclamo automatico bloqueado no vuelve a enviar el correo", async () =>
   assert.deepEqual(report, {
     status: "skipped",
     reason: "maximo_intentos",
+    configId: 1,
+    programacionNombre: "Reporte principal",
     reportDate: "2026-08-04",
     attempt: 3
   });
@@ -326,6 +365,7 @@ test("el programador omite el automatico si ya existe un envio del dia", async (
   const database = fakeDatabase({
     reporte_asistencia_envios: [{
       id: 9,
+      configuracion_id: 1,
       fecha_reporte: "2026-08-04",
       tipo_envio: "manual",
       estado: "enviado",
@@ -348,7 +388,157 @@ test("el programador se suspende limpiamente cuando falta el secreto de Gmail", 
   assert.deepEqual(result, {
     status: "skipped",
     reason: "gmail_not_configured",
+    configId: 1,
+    programacionNombre: "Reporte principal",
     reportDate: "2026-08-04"
   });
   assert.equal(database.state.reporte_asistencia_envios.length, 0);
+});
+
+test("carga multiples programaciones con sus usuarios de la tabla puente", async () => {
+  const database = fakeDatabase({
+    configuracion_reporte_asistencia: [
+      reportConfig(1, { nombre: "Todos", incluir_todos_activos: true }),
+      reportConfig(2, { nombre: "Equipo elegido", incluir_todos_activos: false }),
+      reportConfig(3, { nombre: "Archivada", eliminado_en: "2026-08-04T15:00:00Z" })
+    ],
+    configuracion_reporte_asistencia_usuarios: [
+      { configuracion_id: 2, usuario_id: 9 },
+      { configuracion_id: 2, usuario_id: 12 },
+      { configuracion_id: 2, usuario_id: 9 }
+    ]
+  });
+
+  const configs = await readAttendanceReportConfigs(database);
+  assert.equal(configs.length, 2);
+  assert.deepEqual(configs[0].usuario_ids, []);
+  assert.deepEqual(configs[1].usuario_ids, [9, 12]);
+  assert.equal(configs[1].nombre, "Equipo elegido");
+
+  const selected = await readAttendanceReportConfig(database, 2);
+  assert.equal(selected.incluir_todos_activos, false);
+  assert.deepEqual(selected.usuario_ids, [9, 12]);
+  await assert.rejects(
+    readAttendanceReportConfig(database, 3),
+    (error) => error.code === "ATTENDANCE_REPORT_CONFIG_NOT_FOUND"
+  );
+});
+
+test("solo incluye asistentes activos con rol trabajador y respeta la seleccion", async () => {
+  const database = fakeDatabase({
+    usuarios: [
+      { id: 8, nombre: "Ana", email: "ana@example.com", rol: "operante", activo: true },
+      { id: 9, nombre: "Luis", email: "luis@example.com", rol: "Jefe de Equipo", activo: true },
+      { id: 10, nombre: "Inactivo", email: "inactivo@example.com", rol: "trabajador", activo: false },
+      { id: 11, nombre: "Admin", email: "admin@example.com", rol: "administrador", activo: true },
+      { id: 12, nombre: "Rosa", email: "rosa@example.com", rol: "TRABAJADOR", activo: true }
+    ],
+    asistencias: [8, 9, 10, 11, 12].map((usuarioId, index) => ({
+      id: index + 1,
+      usuario_id: usuarioId,
+      fecha: "2026-08-04",
+      estado: "Presente",
+      created_at: `2026-08-04T14:3${index}:00Z`
+    }))
+  });
+
+  const activeWorkers = await readActiveAttendanceWorkers(database);
+  assert.deepEqual(activeWorkers.map((worker) => worker.id), [8, 9, 12]);
+
+  const selected = await readPresentAttendances(database, "2026-08-04", {
+    incluir_todos_activos: false,
+    usuario_ids: [9, 10, 11]
+  });
+  assert.deepEqual(selected.map((worker) => worker.usuario_id), [9]);
+
+  const allActive = await readPresentAttendances(database, "2026-08-04", {
+    incluir_todos_activos: true,
+    usuario_ids: []
+  });
+  assert.deepEqual(allActive.map((worker) => worker.usuario_id).sort((a, b) => a - b), [8, 9, 12]);
+});
+
+test("un reporte enviado de una programacion no bloquea otra", async () => {
+  const database = fakeDatabase({
+    configuracion_reporte_asistencia: [reportConfig(1), reportConfig(2)],
+    reporte_asistencia_envios: [{
+      id: 20,
+      configuracion_id: 1,
+      programacion_nombre: "Programacion 1",
+      fecha_reporte: "2026-08-04",
+      tipo_envio: "automatico",
+      estado: "enviado",
+      destinatarios: ["reporte1@example.com"]
+    }]
+  });
+  const messages = [];
+  const result = await runDueAttendanceReports({
+    db: database,
+    envValues: { GMAIL_USER: "calzado661@gmail.com", GMAIL_APP_PASSWORD: "abcdefghijklmnop" },
+    now: new Date("2026-08-04T18:00:00Z"),
+    mailTransportFactory: (config) => ({
+      async sendMail(message) {
+        messages.push({ configId: config.id, message });
+        return { messageId: `mensaje-${config.id}` };
+      }
+    })
+  });
+
+  assert.equal(result.sent, 1);
+  assert.equal(result.failed, 0);
+  assert.deepEqual(messages.map((entry) => entry.configId), [2]);
+  assert.deepEqual(messages[0].message.bcc, ["reporte2@example.com"]);
+  assert.deepEqual(database.state.rpcCalls.map((call) => call.params.p_configuracion_id), [2]);
+});
+
+test("el lote aisla el fallo de una programacion y envia las demas", async () => {
+  const database = fakeDatabase({
+    configuracion_reporte_asistencia: [reportConfig(1), reportConfig(2)]
+  });
+  const result = await runDueAttendanceReports({
+    db: database,
+    envValues: { GMAIL_USER: "calzado661@gmail.com", GMAIL_APP_PASSWORD: "abcdefghijklmnop" },
+    now: new Date("2026-08-04T18:00:00Z"),
+    mailTransportFactory: (config) => ({
+      async sendMail() {
+        if (config.id === 1) throw new Error("fallo SMTP de la primera programacion");
+        return { messageId: `mensaje-${config.id}` };
+      }
+    })
+  });
+
+  assert.equal(result.status, "partial");
+  assert.equal(result.sent, 1);
+  assert.equal(result.failed, 1);
+  const firstLog = database.state.reporte_asistencia_envios.find((row) => row.configuracion_id === 1);
+  const secondLog = database.state.reporte_asistencia_envios.find((row) => row.configuracion_id === 2);
+  assert.equal(firstLog.estado, "error");
+  assert.equal(secondLog.estado, "enviado");
+  assert.equal(firstLog.programacion_nombre, "Programacion 1");
+  assert.equal(secondLog.programacion_nombre, "Programacion 2");
+});
+
+test("procesa como maximo tres programaciones vencidas por tick", async () => {
+  const database = fakeDatabase({
+    configuracion_reporte_asistencia: [1, 2, 3, 4].map((id) => reportConfig(id))
+  });
+  let mailCalls = 0;
+  const result = await runDueAttendanceReports({
+    db: database,
+    envValues: { GMAIL_USER: "calzado661@gmail.com", GMAIL_APP_PASSWORD: "abcdefghijklmnop" },
+    now: new Date("2026-08-04T18:00:00Z"),
+    mailTransportFactory: () => ({
+      async sendMail() {
+        mailCalls += 1;
+        return { messageId: `mensaje-${mailCalls}` };
+      }
+    })
+  });
+
+  assert.equal(result.due, 4);
+  assert.equal(result.processed, 3);
+  assert.equal(result.deferred, 1);
+  assert.equal(result.sent, 3);
+  assert.equal(mailCalls, 3);
+  assert.equal(result.results.filter((item) => item.reason === "batch_limit").length, 1);
 });

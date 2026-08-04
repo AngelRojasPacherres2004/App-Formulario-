@@ -50,17 +50,21 @@ async function requestLocalApi(path, options = {}, config = {}) {
         }
       });
 
-      if (response.status === 404) {
+      const contentType = response.headers.get("content-type") || "";
+      if (response.status === 404 && !contentType.includes("application/json")) {
         sawNotFound = true;
         continue;
       }
-      const contentType = response.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
         sawNonJson = true;
         continue;
       }
 
       const payload = await response.json().catch(() => ({}));
+      if (response.status === 404 && /ruta de api no encontrada/i.test(String(payload.error || payload.message || ""))) {
+        sawNotFound = true;
+        continue;
+      }
       if (response.ok) return payload;
       if (config.nullOnAuthFailure && [400, 401, 403].includes(response.status)) return null;
 
@@ -565,21 +569,38 @@ export async function markAttendance(usuarioId, fecha, presente = true) {
 
 export async function getAttendanceReportSettings() {
   const apiResult = await requestLocalApi("/api/attendance-report/settings", {}, { requiredBackend: true });
-  if (apiResult?.config) return apiResult;
+  if (Array.isArray(apiResult?.configs)) return apiResult;
   throw new Error("El backend actual no incluye Notificaciones. Reinicia el proyecto con npm.cmd run dev; si esta publicado, despliega tambien las nuevas Functions de Netlify.");
 }
 
-export async function saveAttendanceReportSettings(payload) {
+export async function createAttendanceReportSettings(payload) {
   const apiResult = await requestLocalApi("/api/attendance-report/settings", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  }, { requiredBackend: true });
+  if (apiResult?.config) return apiResult.config;
+  throw new Error("No se pudo crear la programacion de Notificaciones.");
+}
+
+export async function updateAttendanceReportSettings(configId, payload) {
+  const apiResult = await requestLocalApi(`/api/attendance-report/settings/${encodeURIComponent(configId)}`, {
     method: "PUT",
     body: JSON.stringify(payload)
   }, { requiredBackend: true });
   if (apiResult?.config) return apiResult.config;
-  throw new Error("El backend actual no incluye Notificaciones. Reinicia el backend o publica las nuevas Functions de Netlify.");
+  throw new Error("No se pudo actualizar la programacion de Notificaciones.");
 }
 
-export async function sendAttendanceReportNow(fecha) {
-  const apiResult = await requestLocalApi("/api/attendance-report/send", {
+export async function deleteAttendanceReportSettings(configId) {
+  const apiResult = await requestLocalApi(`/api/attendance-report/settings/${encodeURIComponent(configId)}`, {
+    method: "DELETE"
+  }, { requiredBackend: true });
+  if (apiResult && (apiResult.deleted || apiResult.archived || apiResult.config)) return apiResult;
+  throw new Error("No se pudo eliminar la programacion de Notificaciones.");
+}
+
+export async function sendAttendanceReportNow(configId, fecha) {
+  const apiResult = await requestLocalApi(`/api/attendance-report/settings/${encodeURIComponent(configId)}/send`, {
     method: "POST",
     body: JSON.stringify({ fecha })
   }, { requiredBackend: true });

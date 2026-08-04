@@ -4,6 +4,11 @@ export const DEFAULT_GMAIL_USER = "calzado661@gmail.com";
 export const DEFAULT_REPORT_SUBJECT = "Reporte diario de asistencia";
 export const REPORT_TIME_ZONE = "America/Lima";
 export const MAX_REPORT_RECIPIENTS = 20;
+export const MAX_AUTOMATIC_REPORTS_PER_TICK = 3;
+
+const REPORT_CONFIG_TABLE = "configuracion_reporte_asistencia";
+const REPORT_CONFIG_USERS_TABLE = "configuracion_reporte_asistencia_usuarios";
+const WORKER_ROLES = new Set(["trabajador", "operante", "jefe de equipo"]);
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/;
@@ -66,6 +71,39 @@ function timeToMinutes(value) {
   const match = String(value || "").match(TIME_PATTERN);
   if (!match) throw new Error("La hora de envio no es valida.");
   return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function normalizeWorkerRole(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizePositiveIds(values) {
+  return Array.from(new Set(
+    (Array.isArray(values) ? values : [])
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value > 0)
+  ));
+}
+
+function normalizeReportConfig(config, selectedUserIds = []) {
+  const id = Number(config?.id);
+  return {
+    ...config,
+    id,
+    nombre: String(config?.nombre || `Programacion ${id}`).trim(),
+    activo: config?.activo === true,
+    destinatarios: normalizeRecipients(config?.destinatarios),
+    zona_horaria: config?.zona_horaria || REPORT_TIME_ZONE,
+    asunto: normalizeReportSubject(config?.asunto),
+    incluir_todos_activos: config?.incluir_todos_activos !== false,
+    usuario_ids: normalizePositiveIds(selectedUserIds)
+  };
 }
 
 export function normalizeRecipients(value) {
@@ -140,15 +178,56 @@ export function gmailConfiguration(envValues = process.env) {
   };
 }
 
-export async function readAttendanceReportConfig(db) {
+async function readConfigSelections(db, configIds) {
+  const ids = normalizePositiveIds(configIds);
+  if (!ids.length) return new Map();
+
+  let query = db
+    .from(REPORT_CONFIG_USERS_TABLE)
+    .select("configuracion_id,usuario_id");
+  query = ids.length === 1
+    ? query.eq("configuracion_id", ids[0])
+    : query.in("configuracion_id", ids);
+  const rows = databaseError(await query, "No se pudieron cargar los trabajadores seleccionados.") || [];
+  const selections = new Map(ids.map((id) => [id, []]));
+  rows.forEach((row) => {
+    const configId = Number(row.configuracion_id);
+    const userId = Number(row.usuario_id);
+    if (!selections.has(configId) || !Number.isInteger(userId) || userId <= 0) return;
+    selections.get(configId).push(userId);
+  });
+  selections.forEach((values, id) => selections.set(id, normalizePositiveIds(values)));
+  return selections;
+}
+
+export async function readAttendanceReportConfigs(db) {
   const result = await db
-    .from("configuracion_reporte_asistencia")
+    .from(REPORT_CONFIG_TABLE)
     .select("*")
-    .eq("id", 1)
+    .is("eliminado_en", null)
+    .order("id", { ascending: true });
+  const configs = databaseError(result, "No se pudieron cargar las programaciones del reporte.") || [];
+  const selections = await readConfigSelections(db, configs.map((config) => config.id));
+  return configs.map((config) => normalizeReportConfig(config, selections.get(Number(config.id)) || []));
+}
+
+export async function readAttendanceReportConfig(db, configId = 1) {
+  const id = Number(configId);
+  if (!Number.isInteger(id) || id <= 0) throw new Error("La programacion del reporte no es valida.");
+  const result = await db
+    .from(REPORT_CONFIG_TABLE)
+    .select("*")
+    .eq("id", id)
+    .is("eliminado_en", null)
     .maybeSingle();
-  const config = databaseError(result, "No se pudo cargar la configuracion del reporte.");
-  if (!config) throw new Error("No existe la configuracion del reporte de asistencia.");
-  return config;
+  const config = databaseError(result, "No se pudo cargar la programacion del reporte.");
+  if (!config) {
+    const error = new Error("No existe la programacion del reporte de asistencia.");
+    error.code = "ATTENDANCE_REPORT_CONFIG_NOT_FOUND";
+    throw error;
+  }
+  const selections = await readConfigSelections(db, [id]);
+  return normalizeReportConfig(config, selections.get(id) || []);
 }
 
 export async function readAttendanceReportHistory(db, limit = 12) {
@@ -161,7 +240,17 @@ export async function readAttendanceReportHistory(db, limit = 12) {
   return databaseError(result, "No se pudo cargar el historial de reportes.") || [];
 }
 
-export async function readPresentAttendances(db, reportDate) {
+export async function readActiveAttendanceWorkers(db) {
+  const result = await db
+    .from("usuarios")
+    .select("id,nombre,email,rol,activo")
+    .eq("activo", true)
+    .order("nombre", { ascending: true });
+  const workers = databaseError(result, "No se pudieron consultar los trabajadores activos.") || [];
+  return workers.filter((worker) => worker.activo === true && WORKER_ROLES.has(normalizeWorkerRole(worker.rol)));
+}
+
+export async function readPresentAttendances(db, reportDate, config = null) {
   if (!DATE_PATTERN.test(String(reportDate || ""))) throw new Error("La fecha del reporte no es valida.");
   const attendanceResult = await db
     .from("asistencias")
@@ -170,21 +259,21 @@ export async function readPresentAttendances(db, reportDate) {
     .ilike("estado", "Presente")
     .order("created_at", { ascending: true });
   const attendances = databaseError(attendanceResult, "No se pudo consultar la asistencia.") || [];
-  const userIds = Array.from(new Set(attendances.map((row) => Number(row.usuario_id)).filter(Number.isInteger)));
+  if (!attendances.length) return [];
 
-  let users = [];
-  if (userIds.length) {
-    const usersResult = await db
-      .from("usuarios")
-      .select("id,nombre,email,rol")
-      .in("id", userIds);
-    users = databaseError(usersResult, "No se pudieron consultar los trabajadores asistentes.") || [];
-  }
-
-  const usersById = new Map(users.map((user) => [Number(user.id), user]));
+  const includeAllActive = config?.incluir_todos_activos !== false;
+  const selectedIds = new Set(normalizePositiveIds(config?.usuario_ids));
+  if (!includeAllActive && !selectedIds.size) return [];
+  const activeWorkers = await readActiveAttendanceWorkers(db);
+  const usersById = new Map(
+    activeWorkers
+      .filter((worker) => includeAllActive || selectedIds.has(Number(worker.id)))
+      .map((worker) => [Number(worker.id), worker])
+  );
   return attendances
     .map((attendance) => {
       const user = usersById.get(Number(attendance.usuario_id));
+      if (!user) return null;
       return {
         id: attendance.id,
         usuario_id: attendance.usuario_id,
@@ -195,6 +284,7 @@ export async function readPresentAttendances(db, reportDate) {
         rol: user?.rol || ""
       };
     })
+    .filter(Boolean)
     .sort((left, right) => left.nombre.localeCompare(right.nombre, "es", { sensitivity: "base" }));
 }
 
@@ -287,7 +377,8 @@ async function createManualReportLog(db, { config, reportDate, recipients, initi
   const result = await db
     .from("reporte_asistencia_envios")
     .insert({
-      configuracion_id: Number(config.id || 1),
+      configuracion_id: Number(config.id),
+      programacion_nombre: String(config.nombre || `Programacion ${config.id}`),
       fecha_reporte: reportDate,
       tipo_envio: "manual",
       estado: "procesando",
@@ -300,8 +391,11 @@ async function createManualReportLog(db, { config, reportDate, recipients, initi
   return databaseError(result, "No se pudo iniciar el historial del reporte.");
 }
 
-export async function claimAutomaticReport(db, { reportDate, recipients, now = new Date() }) {
+export async function claimAutomaticReport(db, { configId, reportDate, recipients, now = new Date() }) {
+  const id = Number(configId);
+  if (!Number.isInteger(id) || id <= 0) throw new Error("La programacion del reporte no es valida.");
   const result = await db.rpc("reclamar_reporte_asistencia", {
+    p_configuracion_id: id,
     p_fecha_reporte: reportDate,
     p_destinatarios: recipients,
     p_ahora: now.toISOString()
@@ -330,13 +424,15 @@ export async function sendAttendanceReport({
   if (!['automatico', 'manual'].includes(type)) throw new Error("El tipo de envio no es valido.");
   const recipients = normalizeRecipients(config?.destinatarios);
   if (!recipients.length) throw new Error("Agrega al menos un correo destinatario antes de enviar.");
+  const configId = Number(config?.id);
+  if (!Number.isInteger(configId) || configId <= 0) throw new Error("La programacion del reporte no es valida.");
   const gmail = gmailConfiguration(envValues);
   if (!mailTransport && !gmail.configured) {
     throw new Error("Falta configurar GMAIL_APP_PASSWORD en las variables privadas de Netlify.");
   }
 
   const claim = type === "automatico"
-    ? await claimAutomaticReport(db, { reportDate, recipients })
+    ? await claimAutomaticReport(db, { configId, reportDate, recipients })
     : {
         claimed: true,
         reason: "manual",
@@ -344,16 +440,26 @@ export async function sendAttendanceReport({
         log: await createManualReportLog(db, { config, reportDate, recipients, initiatedBy })
       };
   if (!claim.claimed) {
-    return { status: "skipped", reason: claim.reason, reportDate, attempt: claim.attempt };
+    return {
+      status: "skipped",
+      reason: claim.reason,
+      configId,
+      programacionNombre: String(config.nombre || `Programacion ${configId}`),
+      reportDate,
+      attempt: claim.attempt
+    };
   }
 
   let mailAccepted = false;
   let historyConfirmed = false;
   try {
-    const attendees = await readPresentAttendances(db, reportDate);
+    const attendees = await readPresentAttendances(db, reportDate, config);
     databaseError(await db
       .from("reporte_asistencia_envios")
-      .update({ asistentes_count: attendees.length })
+      .update({
+        programacion_nombre: String(config.nombre || `Programacion ${configId}`),
+        asistentes_count: attendees.length
+      })
       .eq("id", claim.log.id), "No se pudo actualizar el total de asistentes del reporte.");
     const content = buildAttendanceReport({
       reportDate,
@@ -401,12 +507,14 @@ export async function sendAttendanceReport({
       const configResult = await db
         .from("configuracion_reporte_asistencia")
         .update({ ultimo_envio_fecha: reportDate, ultimo_envio_en: sentAt })
-        .eq("id", Number(config.id || 1));
+        .eq("id", configId);
       if (configResult.error) configWarning = cleanErrorMessage(configResult.error);
     }
 
     return {
       status: "sent",
+      configId,
+      programacionNombre: String(config.nombre || `Programacion ${configId}`),
       reportDate,
       recipients,
       attendeesCount: attendees.length,
@@ -435,13 +543,31 @@ export async function sendAttendanceReport({
   }
 }
 
-export async function runDueAttendanceReport({ db, envValues = process.env, now = new Date() }) {
-  const config = await readAttendanceReportConfig(db);
-  const due = reportDue(config, now);
-  if (!due.due) return { status: "skipped", reason: due.reason, reportDate: due.reportDate || null };
+export async function runDueAttendanceReport({
+  db,
+  envValues = process.env,
+  now = new Date(),
+  config = null,
+  configId = null,
+  mailTransport = null
+}) {
+  const resolvedConfig = config || await readAttendanceReportConfig(db, configId || 1);
+  const resolvedConfigId = Number(resolvedConfig.id);
+  const programacionNombre = String(resolvedConfig.nombre || `Programacion ${resolvedConfigId}`);
+  const due = reportDue(resolvedConfig, now);
+  if (!due.due) {
+    return {
+      status: "skipped",
+      reason: due.reason,
+      configId: resolvedConfigId,
+      programacionNombre,
+      reportDate: due.reportDate || null
+    };
+  }
   const existingResult = await db
     .from("reporte_asistencia_envios")
     .select("id,estado")
+    .eq("configuracion_id", resolvedConfigId)
     .eq("fecha_reporte", due.reportDate)
     .in("estado", ["enviando", "enviado", "revision"])
     .limit(1);
@@ -451,22 +577,135 @@ export async function runDueAttendanceReport({ db, envValues = process.env, now 
       await db
         .from("configuracion_reporte_asistencia")
         .update({ ultimo_envio_fecha: due.reportDate, ultimo_envio_en: now.toISOString() })
-        .eq("id", Number(config.id || 1));
+        .eq("id", resolvedConfigId);
     }
     return {
       status: "skipped",
       reason: existing[0].estado === "enviado" ? "already_sent" : "requires_review",
+      configId: resolvedConfigId,
+      programacionNombre,
       reportDate: due.reportDate
     };
   }
-  if (!gmailConfiguration(envValues).configured) {
-    return { status: "skipped", reason: "gmail_not_configured", reportDate: due.reportDate };
+  if (!mailTransport && !gmailConfiguration(envValues).configured) {
+    return {
+      status: "skipped",
+      reason: "gmail_not_configured",
+      configId: resolvedConfigId,
+      programacionNombre,
+      reportDate: due.reportDate
+    };
   }
   return sendAttendanceReport({
     db,
     envValues,
-    config,
+    config: resolvedConfig,
     reportDate: due.reportDate,
-    type: "automatico"
+    type: "automatico",
+    mailTransport
   });
+}
+
+function rotateDueConfigs(configs, now) {
+  if (configs.length <= MAX_AUTOMATIC_REPORTS_PER_TICK) return configs;
+  const minute = Math.floor(now.getTime() / 60_000);
+  const offset = minute % configs.length;
+  return [...configs.slice(offset), ...configs.slice(0, offset)];
+}
+
+export async function runDueAttendanceReports({
+  db,
+  envValues = process.env,
+  now = new Date(),
+  mailTransportFactory = null
+}) {
+  const configs = await readAttendanceReportConfigs(db);
+  const dueConfigs = [];
+  const results = [];
+
+  configs.forEach((config) => {
+    const due = reportDue(config, now);
+    if (due.due) {
+      dueConfigs.push(config);
+      return;
+    }
+    results.push({
+      status: "skipped",
+      reason: due.reason,
+      configId: Number(config.id),
+      programacionNombre: config.nombre,
+      reportDate: due.reportDate || null
+    });
+  });
+
+  if (dueConfigs.length && !gmailConfiguration(envValues).configured && !mailTransportFactory) {
+    dueConfigs.forEach((config) => {
+      const due = reportDue(config, now);
+      results.push({
+        status: "skipped",
+        reason: "gmail_not_configured",
+        configId: Number(config.id),
+        programacionNombre: config.nombre,
+        reportDate: due.reportDate || null
+      });
+    });
+    return {
+      status: "completed",
+      checked: configs.length,
+      due: dueConfigs.length,
+      processed: 0,
+      deferred: 0,
+      sent: 0,
+      skipped: results.length,
+      failed: 0,
+      results
+    };
+  }
+
+  const orderedDue = rotateDueConfigs(dueConfigs, now);
+  const candidates = orderedDue.slice(0, MAX_AUTOMATIC_REPORTS_PER_TICK);
+  const deferredConfigs = orderedDue.slice(MAX_AUTOMATIC_REPORTS_PER_TICK);
+  deferredConfigs.forEach((config) => {
+    results.push({
+      status: "skipped",
+      reason: "batch_limit",
+      configId: Number(config.id),
+      programacionNombre: config.nombre,
+      reportDate: localDateTimeParts(now, config.zona_horaria || REPORT_TIME_ZONE).date
+    });
+  });
+
+  const settled = await Promise.allSettled(candidates.map(async (config) => {
+    const mailTransport = typeof mailTransportFactory === "function" ? mailTransportFactory(config) : null;
+    return runDueAttendanceReport({ db, envValues, now, config, mailTransport });
+  }));
+  settled.forEach((entry, index) => {
+    const config = candidates[index];
+    if (entry.status === "fulfilled") {
+      results.push(entry.value);
+      return;
+    }
+    results.push({
+      status: "failed",
+      reason: entry.reason?.code || "send_failed",
+      configId: Number(config.id),
+      programacionNombre: config.nombre,
+      reportDate: localDateTimeParts(now, config.zona_horaria || REPORT_TIME_ZONE).date
+    });
+  });
+
+  const sent = results.filter((result) => result.status === "sent").length;
+  const failed = results.filter((result) => result.status === "failed").length;
+  const skipped = results.filter((result) => result.status === "skipped").length;
+  return {
+    status: failed ? "partial" : "completed",
+    checked: configs.length,
+    due: dueConfigs.length,
+    processed: candidates.length,
+    deferred: deferredConfigs.length,
+    sent,
+    skipped,
+    failed,
+    results
+  };
 }

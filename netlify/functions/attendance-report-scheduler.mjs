@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { runDueAttendanceReport } from "../../services/attendance_report.mjs";
+import { runDueAttendanceReports } from "../../services/attendance_report.mjs";
 
 function databaseClient() {
   const url = process.env.SUPABASE_URL;
@@ -13,19 +13,23 @@ function databaseClient() {
 }
 
 export default async function attendanceReportScheduler() {
-  const result = await runDueAttendanceReport({
+  const result = await runDueAttendanceReports({
     db: databaseClient(),
     envValues: process.env,
     now: new Date()
   });
 
-  // Netlify conserva este resumen en los logs sin incluir destinatarios ni secretos.
+  // Netlify conserva solamente totales; nunca se registran destinatarios ni secretos.
   console.log(JSON.stringify({
     task: "attendance-report",
     status: result.status,
-    reason: result.reason || null,
-    reportDate: result.reportDate || null,
-    attendeesCount: result.attendeesCount ?? null
+    checked: result.checked,
+    due: result.due,
+    processed: result.processed,
+    deferred: result.deferred,
+    sent: result.sent,
+    skipped: result.skipped,
+    failed: result.failed
   }));
 }
 
