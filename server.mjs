@@ -17,6 +17,12 @@ import {
   REPORT_TIME_ZONE,
   sendAttendanceReport
 } from "./services/attendance_report.mjs";
+import {
+  readActivityCompliance,
+  readActivityReportConfig,
+  readActivityReportHistory,
+  sendActivityReport
+} from "./services/activity_report.mjs";
 
 const moduleUrl = import.meta.url;
 const modulePath = moduleUrl ? fileURLToPath(moduleUrl) : "";
@@ -1284,7 +1290,7 @@ function handleAttendanceReportError(response, error, fallback, defaultStatus = 
   if (attendanceReportSchemaMissing(error)) {
     sendJson(response, 503, {
       code: "ATTENDANCE_REPORT_MIGRATION_REQUIRED",
-      error: "Falta aplicar las migraciones sql/017_reporte_asistencia_automatico.sql y sql/018_multiples_programaciones_reporte_asistencia.sql en Supabase."
+      error: "Falta aplicar una migracion de reportes en Supabase (sql/017, sql/018 o sql/019)."
     });
     return;
   }
@@ -1514,6 +1520,112 @@ async function handleSendAttendanceReport(request, response, configId = 1) {
       "No se pudo enviar el reporte de asistencia.",
       validationError ? 400 : 500
     );
+  }
+}
+
+function formatActivityReportConfig(config) {
+  return {
+    ...config,
+    hora_manana: String(config?.hora_manana || "12:00").slice(0, 5),
+    hora_tarde: String(config?.hora_tarde || "18:00").slice(0, 5)
+  };
+}
+
+async function handleReadActivityReportSettings(request, response) {
+  try {
+    if (!requireAdministrator(request, response)) return;
+    const [config, history] = await Promise.all([
+      readActivityReportConfig(supabase),
+      readActivityReportHistory(supabase, 50)
+    ]);
+    const gmail = gmailConfiguration(env);
+    sendJson(response, 200, {
+      config: formatActivityReportConfig(config),
+      history,
+      gmail: { sender: gmail.sender, configured: gmail.configured }
+    });
+  } catch (error) {
+    handleAttendanceReportError(response, error, "No se pudo cargar el reporte de actividades.");
+  }
+}
+
+async function handleUpdateActivityReportSettings(request, response) {
+  try {
+    if (!requireAdministrator(request, response)) return;
+    const session = readSession(request);
+    const body = JSON.parse((await readBody(request)) || "{}");
+    const recipients = normalizeRecipients(body.destinatarios);
+    const morning = normalizeReportTime(body.hora_manana);
+    const afternoon = normalizeReportTime(body.hora_tarde);
+    const active = body.activo === true;
+    if (morning >= afternoon) throw new Error("La hora de la manana debe ser anterior a la hora de la tarde.");
+    if (active && !recipients.length) throw new Error("Agrega al menos un correo destinatario para activar el reporte.");
+    if (active && !gmailConfiguration(env).configured) {
+      const error = new Error("Configura primero la contrasena de aplicacion de Gmail en Netlify.");
+      error.code = "GMAIL_CONFIGURATION_REQUIRED";
+      throw error;
+    }
+    const payload = {
+      activo: active,
+      destinatarios: recipients,
+      hora_manana: morning,
+      hora_tarde: afternoon,
+      zona_horaria: REPORT_TIME_ZONE,
+      asunto: normalizeReportSubject(body.asunto || "Reporte de registros de actividades"),
+      actualizado_por: Number(session?.id) || null
+    };
+    const result = await supabase.from("configuracion_reporte_actividad").update(payload).eq("id", 1).select("*").single();
+    if (result.error) throw result.error;
+    sendJson(response, 200, { config: formatActivityReportConfig(result.data) });
+  } catch (error) {
+    const validationError = error instanceof SyntaxError || /hora|correo|destinatario|asunto|manana|tarde/i.test(String(error?.message || ""));
+    handleAttendanceReportError(response, error, "No se pudo guardar el reporte de actividades.", validationError ? 400 : 500);
+  }
+}
+
+async function handlePreviewActivityReport(request, response) {
+  try {
+    if (!requireAdministrator(request, response)) return;
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    const config = await readActivityReportConfig(supabase);
+    const reportDate = String(url.searchParams.get("date") || localDateTimeParts(new Date(), REPORT_TIME_ZONE).date);
+    const shift = String(url.searchParams.get("shift") || "manana");
+    const rows = await readActivityCompliance(supabase, reportDate, shift, config);
+    sendJson(response, 200, {
+      report: {
+        fecha: reportDate,
+        turno: shift,
+        rows,
+        cumplieron: rows.filter((row) => row.cumplio).length,
+        sin_registro: rows.filter((row) => !row.cumplio).length
+      }
+    });
+  } catch (error) {
+    const validationError = /fecha|turno/i.test(String(error?.message || ""));
+    handleAttendanceReportError(response, error, "No se pudo generar el reporte de actividades.", validationError ? 400 : 500);
+  }
+}
+
+async function handleSendActivityReport(request, response) {
+  try {
+    if (!requireAdministrator(request, response)) return;
+    const session = readSession(request);
+    const body = JSON.parse((await readBody(request)) || "{}");
+    const config = await readActivityReportConfig(supabase);
+    const reportDate = String(body.fecha || localDateTimeParts(new Date(), REPORT_TIME_ZONE).date);
+    const result = await sendActivityReport({
+      db: supabase,
+      envValues: env,
+      config,
+      reportDate,
+      shift: String(body.turno || "manana"),
+      type: "manual",
+      initiatedBy: Number(session?.id) || null
+    });
+    sendJson(response, 200, { report: result });
+  } catch (error) {
+    const validationError = error instanceof SyntaxError || /fecha|turno|correo|destinatario/i.test(String(error?.message || ""));
+    handleAttendanceReportError(response, error, "No se pudo enviar el reporte de actividades.", validationError ? 400 : 500);
   }
 }
 
@@ -2043,8 +2155,8 @@ export async function handleRequest(request, response, { serveFiles = true } = {
   if (/^\/api\/health\/?$/.test(apiPath) && request.method === "GET") {
     sendJson(response, 200, {
       ok: true,
-      apiVersion: 4,
-      features: ["attendance-report", "attendance-report-schedules"]
+      apiVersion: 5,
+      features: ["attendance-report", "attendance-report-schedules", "activity-report-shifts"]
     });
     return;
   }
@@ -2172,6 +2284,26 @@ export async function handleRequest(request, response, { serveFiles = true } = {
 
   if (/^\/api\/attendance-report\/send\/?$/.test(apiPath) && request.method === "POST") {
     await handleSendAttendanceReport(request, response);
+    return;
+  }
+
+  if (/^\/api\/activity-report\/settings\/?$/.test(apiPath) && request.method === "GET") {
+    await handleReadActivityReportSettings(request, response);
+    return;
+  }
+
+  if (/^\/api\/activity-report\/settings\/?$/.test(apiPath) && request.method === "PUT") {
+    await handleUpdateActivityReportSettings(request, response);
+    return;
+  }
+
+  if (/^\/api\/activity-report\/preview\/?$/.test(apiPath) && request.method === "GET") {
+    await handlePreviewActivityReport(request, response);
+    return;
+  }
+
+  if (/^\/api\/activity-report\/send\/?$/.test(apiPath) && request.method === "POST") {
+    await handleSendActivityReport(request, response);
     return;
   }
 

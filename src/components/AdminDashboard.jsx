@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, Clock3, GraduationCap, LockKeyhole, Mail, Pencil, Plus, RefreshCcw, Save, Search, Send, Trash2, UsersRound, X } from "lucide-react";
+import { CheckCircle2, ClipboardCheck, Clock3, GraduationCap, LockKeyhole, Mail, Pencil, Plus, RefreshCcw, Save, Search, Send, Trash2, UsersRound, X } from "lucide-react";
 import {
   createAttendanceReportSettings,
   createTask,
@@ -10,6 +10,8 @@ import {
   deleteTienda,
   deleteUser,
   friendlyError,
+  getActivityReportPreview,
+  getActivityReportSettings,
   getAttendanceForDate,
   getAttendanceReportSettings,
   getUserTrainingProfile,
@@ -21,10 +23,12 @@ import {
   markAttendance,
   selectUsers,
   sendAttendanceReportNow,
+  sendActivityReportNow,
   setUserTrainingStatus,
   setTaskScoringRules,
   updateTask,
   updateAttendanceReportSettings,
+  updateActivityReportSettings,
   updateTienda,
   updateUser
 } from "../lib/repository";
@@ -1074,6 +1078,144 @@ function notificationIncludesAllWorkers(config) {
 }
 
 function NotificationsPanel() {
+  const [tab, setTab] = useState("asistencia");
+  return (
+    <div className="stack notification-page">
+      <div className="notification-tabs" role="tablist" aria-label="Tipos de notificacion">
+        <button type="button" role="tab" aria-selected={tab === "asistencia"} className={tab === "asistencia" ? "active" : ""} onClick={() => setTab("asistencia")}>
+          <Mail aria-hidden="true" /> Asistencia
+        </button>
+        <button type="button" role="tab" aria-selected={tab === "actividades"} className={tab === "actividades" ? "active" : ""} onClick={() => setTab("actividades")}>
+          <ClipboardCheck aria-hidden="true" /> Registros de actividades
+        </button>
+      </div>
+      {tab === "asistencia" ? <AttendanceNotificationsPanel /> : <ActivityNotificationsPanel />}
+    </div>
+  );
+}
+
+function ActivityNotificationsPanel() {
+  const [reportDate, setReportDate] = useState(todayLimaISO());
+  const [shift, setShift] = useState("manana");
+  const [form, setForm] = useState({ activo: false, destinatarios: "", hora_manana: "12:00", hora_tarde: "18:00", asunto: "Reporte de registros de actividades" });
+  const [preview, setPreview] = useState(null);
+  const [previewRefresh, setPreviewRefresh] = useState(0);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [sending, setSending] = useState(false);
+  const { data, loading, error, reload } = useAsyncData(getActivityReportSettings, [], { config: null, history: [], gmail: { configured: false } });
+  const gmailConfigured = Boolean(data?.gmail?.configured);
+
+  useEffect(() => {
+    if (!data?.config) return;
+    setForm({
+      activo: boolValue(data.config.activo),
+      destinatarios: notificationRecipients(data.config.destinatarios).join("\n"),
+      hora_manana: String(data.config.hora_manana || "12:00").slice(0, 5),
+      hora_tarde: String(data.config.hora_tarde || "18:00").slice(0, 5),
+      asunto: data.config.asunto || "Reporte de registros de actividades"
+    });
+  }, [data?.config]);
+
+  useEffect(() => {
+    if (loading || error || !data?.config) return;
+    let cancelled = false;
+    setPreviewLoading(true);
+    getActivityReportPreview(reportDate, shift)
+      .then((result) => { if (!cancelled) setPreview(result); })
+      .catch((err) => { if (!cancelled) setStatus({ type: "error", message: friendlyError(err) }); })
+      .finally(() => { if (!cancelled) setPreviewLoading(false); });
+    return () => { cancelled = true; };
+  }, [reportDate, shift, loading, error, data?.config?.updated_at, previewRefresh]);
+
+  function payload() {
+    const recipients = notificationRecipients(form.destinatarios);
+    if (form.hora_manana >= form.hora_tarde) throw new Error("La hora de la manana debe ser anterior a la hora de la tarde.");
+    if (form.activo && !recipients.length) throw new Error("Agrega al menos un correo para activar el reporte.");
+    if (form.activo && !gmailConfigured) throw new Error("Configura Gmail antes de activar el reporte.");
+    return { ...form, activo: Boolean(form.activo), destinatarios: recipients };
+  }
+
+  async function handleSave(event) {
+    event.preventDefault();
+    setSaving(true); setStatus(null);
+    try {
+      await updateActivityReportSettings(payload());
+      setStatus({ type: "success", message: "Configuracion de actividades guardada correctamente." });
+      reload();
+    } catch (err) { setStatus({ type: "error", message: friendlyError(err) }); }
+    finally { setSaving(false); }
+  }
+
+  async function handleSend() {
+    setSending(true); setStatus(null);
+    try {
+      const result = await sendActivityReportNow(reportDate, shift);
+      setStatus({ type: "success", message: `Reporte de ${shift === "manana" ? "la manana" : "la tarde"} enviado: ${result.completedCount} cumplieron y ${result.missingCount} no registraron actividad.` });
+      reload();
+    } catch (err) { setStatus({ type: "error", message: friendlyError(err) }); }
+    finally { setSending(false); }
+  }
+
+  const rows = (preview?.rows || []).map((row) => ({
+    Operante: row.nombre,
+    Correo: row.email || "Sin correo",
+    Estado: row.cumplio ? "Cumplio" : "Sin registro",
+    Registros: row.registros
+  }));
+  const historyRows = (data?.history || []).map((item) => ({
+    Fecha: item.fecha_reporte,
+    Turno: item.turno === "manana" ? "Manana" : "Tarde",
+    Envio: item.tipo_envio === "automatico" ? "Automatico" : "Manual",
+    Estado: item.estado,
+    Cumplieron: item.cumplieron_count ?? "",
+    "Sin registro": item.sin_registro_count ?? "",
+    Intentos: item.intentos ?? 1,
+    "Fecha de envio": item.enviado_en ? formatDateTimeLima(item.enviado_en) : "",
+    Detalle: item.detalle_error || ""
+  }));
+
+  return (
+    <div className="stack">
+      <Panel title="Reporte de registros de actividades" eyebrow="Control por turno">
+        <div className="attendance-report-intro notification-hero">
+          <span className="attendance-report-icon"><ClipboardCheck aria-hidden="true" /></span>
+          <div className="notification-hero-copy"><strong>Verifica que cada operante activo registre actividad</strong><p>Se envia un corte en la manana y otro en la tarde, indicando quienes cumplieron y quienes no hicieron ningun registro.</p></div>
+          <span className={`notification-gmail-status ${gmailConfigured ? "ready" : "pending"}`}>{gmailConfigured ? "Credenciales cargadas" : "Gmail pendiente"}</span>
+        </div>
+        {loading ? <LoadingBlock /> : null}
+        {error ? <Alert type="error">{error}</Alert> : null}
+        <StatusAlert status={status} />
+        {!loading && !error ? (
+          <form className="stack" onSubmit={handleSave}>
+            <div className="form-grid notification-editor-form">
+              <TextInput label="Hora de notificacion de la manana" type="time" value={form.hora_manana} onChange={(hora_manana) => setForm({ ...form, hora_manana })} required />
+              <TextInput label="Hora de notificacion de la tarde" type="time" value={form.hora_tarde} onChange={(hora_tarde) => setForm({ ...form, hora_tarde })} required />
+              <TextInput label="Asunto del correo" value={form.asunto} onChange={(asunto) => setForm({ ...form, asunto })} maxLength={160} required />
+              <CheckboxInput label="Activar envios automaticos" checked={form.activo} onChange={(activo) => setForm({ ...form, activo })} hint="Envia dos reportes diarios, uno por cada turno." />
+              <TextArea label="Correos destinatarios" value={form.destinatarios} onChange={(destinatarios) => setForm({ ...form, destinatarios })} rows={4} placeholder="correo1@gmail.com\ncorreo2@empresa.com" hint="Uno por linea o separados por comas. Maximo 20." />
+            </div>
+            <div className="form-actions"><Button type="submit" icon={Save} loading={saving}>Guardar configuracion</Button></div>
+          </form>
+        ) : null}
+      </Panel>
+
+      <Panel title="Reporte de cumplimiento" eyebrow="Vista previa" actions={<Button type="button" icon={Send} loading={sending} disabled={!gmailConfigured || !notificationRecipients(form.destinatarios).length || previewLoading} onClick={handleSend}>Enviar ahora</Button>}>
+        <div className="notification-toolbar">
+          <TextInput label="Fecha" type="date" value={reportDate} onChange={setReportDate} />
+          <label className="field"><span className="field-label">Turno</span><select className="input" value={shift} onChange={(event) => setShift(event.target.value)}><option value="manana">Manana</option><option value="tarde">Tarde</option></select></label>
+          <Button type="button" variant="secondary" icon={RefreshCcw} onClick={() => setPreviewRefresh((value) => value + 1)}>Actualizar</Button>
+        </div>
+        <div className="metrics-row notification-metrics"><Metric label="Operantes activos" value={preview?.rows?.length ?? 0} /><Metric label="Cumplieron" value={preview?.cumplieron ?? 0} tone="accent" /><Metric label="Sin registro" value={preview?.sin_registro ?? 0} /></div>
+        {previewLoading ? <LoadingBlock label="Revisando registros" /> : <DataTable rows={rows} empty="No hay operantes activos para mostrar." compact />}
+      </Panel>
+      <Panel title="Historial de envios" eyebrow="Actividades"><DataTable rows={historyRows} empty="Todavia no se enviaron reportes de actividades." compact /></Panel>
+    </div>
+  );
+}
+
+function AttendanceNotificationsPanel() {
   const [reportDate, setReportDate] = useState(todayLimaISO());
   const [editorId, setEditorId] = useState(null);
   const [form, setForm] = useState(emptyNotificationForm);
@@ -1289,7 +1431,7 @@ function NotificationsPanel() {
   }
 
   return (
-    <div className="stack notification-page">
+    <div className="stack">
       <Panel
         title="Notificaciones de asistencia"
         eyebrow="Reportes por correo"

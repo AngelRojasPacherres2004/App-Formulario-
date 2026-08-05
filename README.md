@@ -18,11 +18,11 @@ Las variables secretas deben configurarse en la interfaz, CLI o API de Netlify; 
 
 El despliegue debe incluir el repositorio completo. Subir solamente la carpeta `dist` no despliega `netlify/functions`.
 
-## Reporte automatico de asistencia
+## Reportes automaticos de notificaciones
 
-1. Ejecuta, en orden, `sql/017_reporte_asistencia_automatico.sql` y `sql/018_multiples_programaciones_reporte_asistencia.sql` en el editor SQL de Supabase.
+1. Ejecuta, en orden, `sql/017_reporte_asistencia_automatico.sql`, `sql/018_multiples_programaciones_reporte_asistencia.sql` y `sql/019_reporte_actividades_por_turno.sql` en el editor SQL de Supabase.
 2. Activa la verificacion en dos pasos de `calzado661@gmail.com` y crea una contrasena de aplicacion para el sistema.
 3. Guarda `GMAIL_USER` y `GMAIL_APP_PASSWORD` como variables privadas con alcance **Functions** en Netlify.
 4. Publica el sitio. La funcion programada revisa cada minuto la hora configurada en el apartado **Notificaciones** (zona horaria `America/Lima`).
 
-Cada programacion puede tener su propio nombre, horario, destinatarios y seleccion de trabajadores activos. Las programaciones eliminadas se archivan para conservar su historial de envios. La contrasena de Gmail nunca se guarda en Supabase ni se envia al navegador.
+Cada programacion de asistencia puede tener su propio nombre, horario, destinatarios y seleccion de trabajadores activos. La pestaña **Registros de actividades** permite configurar dos cortes diarios para los operantes activos: mañana y tarde. Las programaciones eliminadas se archivan para conservar su historial de envios. La contrasena de Gmail nunca se guarda en Supabase ni se envia al navegador.

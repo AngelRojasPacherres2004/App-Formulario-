@@ -608,6 +608,36 @@ export async function sendAttendanceReportNow(configId, fecha) {
   throw new Error("El backend actual no incluye el envio de Notificaciones. Reinicia el backend o publica las nuevas Functions de Netlify.");
 }
 
+export async function getActivityReportSettings() {
+  const result = await requestLocalApi("/api/activity-report/settings", {}, { requiredBackend: true });
+  if (result?.config) return result;
+  throw new Error("El backend actual no incluye el reporte de registros de actividades.");
+}
+
+export async function updateActivityReportSettings(payload) {
+  const result = await requestLocalApi("/api/activity-report/settings", {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  }, { requiredBackend: true });
+  if (result?.config) return result.config;
+  throw new Error("No se pudo guardar la configuracion del reporte de actividades.");
+}
+
+export async function getActivityReportPreview(fecha, turno) {
+  const result = await requestLocalApi(`/api/activity-report/preview?date=${encodeURIComponent(fecha)}&shift=${encodeURIComponent(turno)}`, {}, { requiredBackend: true });
+  if (result?.report) return result.report;
+  throw new Error("No se pudo generar el reporte de actividades.");
+}
+
+export async function sendActivityReportNow(fecha, turno) {
+  const result = await requestLocalApi("/api/activity-report/send", {
+    method: "POST",
+    body: JSON.stringify({ fecha, turno })
+  }, { requiredBackend: true });
+  if (result?.report) return result.report;
+  throw new Error("No se pudo enviar el reporte de actividades.");
+}
+
 function activityLogInsertPayload(resourceName, payload) {
   if (resourceName !== "registros_tareas") {
     const mapped = { ...payload };

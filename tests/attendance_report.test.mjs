@@ -295,6 +295,7 @@ test("envia con copia oculta, adjunta CSV y confirma el historial", async () => 
   assert.equal(database.state.reporte_asistencia_envios[0].estado, "enviado");
   assert.equal(database.state.reporte_asistencia_envios[0].asistentes_count, 1);
   assert.equal(database.state.reporte_asistencia_envios[0].programacion_nombre, "Reporte principal");
+  assert.equal(database.state.config.ultimo_envio_fecha, null);
 });
 
 test("registra error antes de Gmail y conserva el conteo para reintentar", async () => {
@@ -360,7 +361,7 @@ test("un reclamo automatico bloqueado no vuelve a enviar el correo", async () =>
   assert.equal(mailCalls, 0);
 });
 
-test("el programador omite el automatico si ya existe un envio del dia", async () => {
+test("un envio manual del dia no bloquea el envio automatico", async () => {
   const now = new Date("2026-08-04T18:00:00Z");
   const database = fakeDatabase({
     reporte_asistencia_envios: [{
@@ -372,9 +373,14 @@ test("el programador omite el automatico si ya existe un envio del dia", async (
       destinatarios: ["reporte1@example.com"]
     }]
   });
-  const result = await runDueAttendanceReport({ db: database, now });
-  assert.equal(result.status, "skipped");
-  assert.equal(result.reason, "already_sent");
+  let mailCalls = 0;
+  const result = await runDueAttendanceReport({
+    db: database,
+    now,
+    mailTransport: { async sendMail() { mailCalls += 1; return { messageId: "automatico" }; } }
+  });
+  assert.equal(result.status, "sent");
+  assert.equal(mailCalls, 1);
   assert.equal(database.state.config.ultimo_envio_fecha, "2026-08-04");
 });
 

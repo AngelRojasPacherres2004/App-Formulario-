@@ -354,7 +354,7 @@ export function buildAttendanceReport({ reportDate, attendees, timeZone = REPORT
   return { html, text, csv };
 }
 
-function gmailTransport(envValues) {
+export function gmailTransport(envValues) {
   const gmail = gmailConfiguration(envValues);
   if (!gmail.configured) {
     throw new Error("Falta configurar GMAIL_APP_PASSWORD en las variables privadas de Netlify.");
@@ -501,9 +501,10 @@ export async function sendAttendanceReport({
       .eq("id", claim.log.id), "No se pudo confirmar el historial del reporte.");
     historyConfirmed = true;
 
-    const today = localDateTimeParts(new Date(), config.zona_horaria || REPORT_TIME_ZONE).date;
     let configWarning = null;
-    if (type === "automatico" || reportDate === today) {
+    // Un envio manual es una prueba o reenvio y no debe consumir el turno
+    // automatico del dia.
+    if (type === "automatico") {
       const configResult = await db
         .from("configuracion_reporte_asistencia")
         .update({ ultimo_envio_fecha: reportDate, ultimo_envio_en: sentAt })
@@ -569,6 +570,7 @@ export async function runDueAttendanceReport({
     .select("id,estado")
     .eq("configuracion_id", resolvedConfigId)
     .eq("fecha_reporte", due.reportDate)
+    .eq("tipo_envio", "automatico")
     .in("estado", ["enviando", "enviado", "revision"])
     .limit(1);
   const existing = databaseError(existingResult, "No se pudo verificar si el reporte ya fue enviado.") || [];

@@ -9,7 +9,7 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "start": "node server.mjs",
-    "test:attendance-report": "node --test tests/attendance_report.test.mjs"
+    "test:attendance-report": "node --test tests/attendance_report.test.mjs tests/activity_report.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.50.0",
