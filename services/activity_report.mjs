@@ -141,22 +141,38 @@ export function buildActivityReport({ reportDate, shift, rows }) {
   const label = shift === "manana" ? "Mañana" : "Tarde";
   const completed = rows.filter((row) => row.cumplio);
   const missing = rows.filter((row) => !row.cumplio);
-  const bodyRows = rows.map((row, index) => `<tr>
+  const completedTableRows = completed.map((row, index) => `<tr>
     <td style="padding:10px;border-bottom:1px solid #dce6e2;">${index + 1}</td>
     <td style="padding:10px;border-bottom:1px solid #dce6e2;font-weight:700;">${escapeHtml(row.nombre)}</td>
-    <td style="padding:10px;border-bottom:1px solid #dce6e2;">${row.cumplio ? "Cumplió" : "Sin registro"}</td>
+    <td style="padding:10px;border-bottom:1px solid #dce6e2;">${escapeHtml(row.email || "Sin correo")}</td>
     <td style="padding:10px;border-bottom:1px solid #dce6e2;">${row.registros}</td>
   </tr>`).join("");
+  const completedEmptyRow = `<tr><td colspan="4" style="padding:20px;text-align:center;color:#66756f;">Nadie registro actividad en este turno.</td></tr>`;
+
+  const missingTableRows = missing.map((row, index) => `<tr>
+    <td style="padding:10px;border-bottom:1px solid #dce6e2;">${index + 1}</td>
+    <td style="padding:10px;border-bottom:1px solid #dce6e2;font-weight:700;">${escapeHtml(row.nombre)}</td>
+    <td style="padding:10px;border-bottom:1px solid #dce6e2;">${escapeHtml(row.email || "Sin correo")}</td>
+    <td style="padding:10px;border-bottom:1px solid #dce6e2;">Sin registro</td>
+  </tr>`).join("");
+  const missingEmptyRow = `<tr><td colspan="4" style="padding:20px;text-align:center;color:#66756f;">Todos registraron actividad en este turno.</td></tr>`;
   const html = `<!doctype html><html lang="es"><body style="margin:0;background:#f2f6f4;font-family:Arial,sans-serif;color:#17221e;">
     <div style="max-width:760px;margin:0 auto;padding:28px 16px;"><div style="background:#10231e;color:#fff;padding:24px;border-radius:14px 14px 0 0;">
       <div style="color:#f4b75e;font-weight:800;text-transform:uppercase;">Sistema de Formularios</div>
       <h1 style="margin:8px 0 4px;">Registros de actividades · ${label}</h1><p style="margin:0;">${displayDate(reportDate)}</p></div>
       <div style="background:#fff;padding:24px;border:1px solid #dce6e2;border-radius:0 0 14px 14px;">
       <p><strong>${completed.length}</strong> cumplieron · <strong>${missing.length}</strong> no registraron actividad</p>
-      <table style="width:100%;border-collapse:collapse;font-size:14px;"><thead><tr style="background:#edf3f0;text-align:left;"><th style="padding:10px;">Nro.</th><th style="padding:10px;">Operante</th><th style="padding:10px;">Estado</th><th style="padding:10px;">Registros</th></tr></thead><tbody>${bodyRows}</tbody></table>
+      <h2 style="margin:18px 0 10px;font-size:17px;">Reporte 1 - Registraron actividad</h2>
+      <table style="width:100%;border-collapse:collapse;font-size:14px;"><thead><tr style="background:#edf3f0;text-align:left;"><th style="padding:10px;">Nro.</th><th style="padding:10px;">Operante</th><th style="padding:10px;">Correo</th><th style="padding:10px;">Registros</th></tr></thead><tbody>${completedTableRows || completedEmptyRow}</tbody></table>
+      <h2 style="margin:26px 0 10px;font-size:17px;">Reporte 2 - No registraron actividad</h2>
+      <table style="width:100%;border-collapse:collapse;font-size:14px;"><thead><tr style="background:#edf3f0;text-align:left;"><th style="padding:10px;">Nro.</th><th style="padding:10px;">Operante</th><th style="padding:10px;">Correo</th><th style="padding:10px;">Estado</th></tr></thead><tbody>${missingTableRows || missingEmptyRow}</tbody></table>
       </div></div></body></html>`;
-  const text = `REPORTE DE REGISTROS DE ACTIVIDADES - ${label.toUpperCase()}\nFecha: ${displayDate(reportDate)}\nCumplieron: ${completed.length}\nSin registro: ${missing.length}\n\n${rows.map((row) => `${row.nombre}: ${row.cumplio ? `Cumplio (${row.registros})` : "Sin registro"}`).join("\n")}`;
-  const csv = `\uFEFF${[["Operante", "Correo", "Turno", "Estado", "Registros"], ...rows.map((row) => [row.nombre, row.email, label, row.cumplio ? "Cumplio" : "Sin registro", row.registros])].map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
+  const text = `REPORTE DE REGISTROS DE ACTIVIDADES - ${label.toUpperCase()}\nFecha: ${displayDate(reportDate)}\nCumplieron: ${completed.length}\nSin registro: ${missing.length}\n\nREPORTE 1 - REGISTRARON ACTIVIDAD\n${completed.length ? completed.map((row, index) => `${index + 1}. ${row.nombre} (${row.registros} registro${row.registros === 1 ? "" : "s"})`).join("\n") : "Nadie registro actividad en este turno."}\n\nREPORTE 2 - NO REGISTRARON ACTIVIDAD\n${missing.length ? missing.map((row, index) => `${index + 1}. ${row.nombre}`).join("\n") : "Todos registraron actividad en este turno."}`;
+  const csv = `\uFEFF${[
+    ["Reporte", "Operante", "Correo", "Turno", "Estado", "Registros"],
+    ...completed.map((row) => ["Registraron actividad", row.nombre, row.email, label, "Cumplio", row.registros]),
+    ...missing.map((row) => ["No registraron actividad", row.nombre, row.email, label, "Sin registro", row.registros])
+  ].map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
   return { html, text, csv, completed: completed.length, missing: missing.length };
 }
 

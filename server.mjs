@@ -1232,6 +1232,79 @@ async function handleDeleteStore(request, response, storeId) {
   }
 }
 
+async function handleReadAmonestaciones(request, response) {
+  try {
+    if (!requireAdministrator(request, response)) return;
+    const result = await supabase.from("amonestaciones").select("*").order("created_at", { ascending: false });
+    if (result.error) throw result.error;
+    sendJson(response, 200, { amonestaciones: result.data || [] });
+  } catch (error) {
+    sendJson(response, 500, { error: error.message || "No se pudieron cargar las amonestaciones." });
+  }
+}
+
+async function handleCreateAmonestacion(request, response) {
+  try {
+    if (!requireAdministrator(request, response)) return;
+    const session = readSession(request);
+    const body = JSON.parse((await readBody(request)) || "{}");
+    const usuarioId = Number(body.usuario_id);
+    const descripcion = String(body.descripcion || "").trim();
+
+    if (!Number.isInteger(usuarioId) || usuarioId <= 0) {
+      sendJson(response, 400, { error: "Selecciona un usuario valido." });
+      return;
+    }
+    if (!descripcion) {
+      sendJson(response, 400, { error: "La descripcion de la amonestacion es obligatoria." });
+      return;
+    }
+
+    const userResult = await supabase.from("usuarios").select("id,activo").eq("id", usuarioId).maybeSingle();
+    if (userResult.error) throw userResult.error;
+    if (!userResult.data || !isActive(userResult.data.activo)) {
+      sendJson(response, 400, { error: "Selecciona un usuario activo." });
+      return;
+    }
+
+    const payload = {
+      usuario_id: usuarioId,
+      descripcion,
+      created_by: session?.id ? Number(session.id) : null
+    };
+    let result = await supabase.from("amonestaciones").insert(payload).select("*").single();
+    if (isPrimaryKeySequenceConflict(result.error)) {
+      result = await supabase
+        .from("amonestaciones")
+        .insert({ ...payload, id: await nextTableId("amonestaciones") })
+        .select("*")
+        .single();
+    }
+    if (result.error) {
+      userMutationError(response, result.error, "No se pudo crear la amonestacion.");
+      return;
+    }
+    sendJson(response, 201, { amonestacion: result.data });
+  } catch (error) {
+    sendJson(response, 500, { error: error.message || "No se pudo crear la amonestacion." });
+  }
+}
+
+async function handleDeleteAmonestacion(request, response, amonestacionId) {
+  try {
+    if (!requireAdministrator(request, response)) return;
+    const result = await supabase.from("amonestaciones").delete().eq("id", amonestacionId).select("id").maybeSingle();
+    if (result.error) throw result.error;
+    if (!result.data) {
+      sendJson(response, 404, { error: "Amonestacion no encontrada." });
+      return;
+    }
+    sendJson(response, 200, { deleted: true });
+  } catch (error) {
+    sendJson(response, 500, { error: error.message || "No se pudo eliminar la amonestacion." });
+  }
+}
+
 async function handleReadAttendances(request, response) {
   try {
     if (!requireAdministrator(request, response)) return;
@@ -1246,6 +1319,8 @@ async function handleReadAttendances(request, response) {
   }
 }
 
+const ATTENDANCE_STATES = new Set(["AUSENTE", "PUNTUAL", "TARDANZA"]);
+
 async function handleMarkAttendance(request, response) {
   try {
     if (!requireAdministrator(request, response)) return;
@@ -1256,11 +1331,17 @@ async function handleMarkAttendance(request, response) {
       sendJson(response, 400, { error: "Usuario y fecha de asistencia son obligatorios." });
       return;
     }
-    const present = body.presente !== false;
+    let estado = String(body.estado || "").trim().toUpperCase();
+    if (!estado && body.presente !== undefined) estado = body.presente !== false ? "PUNTUAL" : "AUSENTE";
+    if (!ATTENDANCE_STATES.has(estado)) {
+      sendJson(response, 400, { error: "El estado de asistencia debe ser Ausente, Puntual o Tardanza." });
+      return;
+    }
+    const present = estado !== "AUSENTE";
     const payload = {
       usuario_id: userId,
       fecha: date,
-      estado: present ? "Presente" : "Ausente",
+      estado,
       created_at: present ? new Date().toISOString() : null
     };
     let result = await supabase
@@ -2249,6 +2330,22 @@ export async function handleRequest(request, response, { serveFiles = true } = {
 
   if (request.url?.startsWith("/api/stores") && request.method === "POST") {
     await handleCreateStore(request, response);
+    return;
+  }
+
+  if (request.url?.startsWith("/api/amonestaciones/") && request.method === "DELETE") {
+    const amonestacionId = Number(new URL(request.url, `http://${request.headers.host}`).pathname.split("/").pop());
+    await handleDeleteAmonestacion(request, response, amonestacionId);
+    return;
+  }
+
+  if (request.url?.startsWith("/api/amonestaciones") && request.method === "GET") {
+    await handleReadAmonestaciones(request, response);
+    return;
+  }
+
+  if (request.url?.startsWith("/api/amonestaciones") && request.method === "POST") {
+    await handleCreateAmonestacion(request, response);
     return;
   }
 

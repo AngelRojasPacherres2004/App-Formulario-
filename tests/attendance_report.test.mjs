@@ -7,6 +7,7 @@ import {
   normalizeRecipients,
   normalizeReportSubject,
   normalizeReportTime,
+  readAbsentAttendances,
   readActiveAttendanceWorkers,
   readAttendanceReportConfig,
   readAttendanceReportConfigs,
@@ -149,7 +150,7 @@ function fakeDatabase(overrides = {}) {
       id: 1,
       usuario_id: 8,
       fecha: "2026-08-04",
-      estado: "Presente",
+      estado: "PUNTUAL",
       created_at: "2026-08-04T14:30:00Z"
     }],
     usuarios: [{ id: 8, nombre: "Ana Perez", email: "ana@example.com", rol: "operante", activo: true }],
@@ -288,12 +289,14 @@ test("envia con copia oculta, adjunta CSV y confirma el historial", async () => 
 
   assert.equal(report.status, "sent");
   assert.equal(report.attendeesCount, 1);
+  assert.equal(report.absenteesCount, 0);
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0].to, "calzado661@gmail.com");
   assert.deepEqual(sentMessages[0].bcc, database.state.config.destinatarios);
   assert.equal(sentMessages[0].attachments[0].filename, "asistencia_2026-08-04.csv");
   assert.equal(database.state.reporte_asistencia_envios[0].estado, "enviado");
   assert.equal(database.state.reporte_asistencia_envios[0].asistentes_count, 1);
+  assert.equal(database.state.reporte_asistencia_envios[0].ausentes_count, 0);
   assert.equal(database.state.reporte_asistencia_envios[0].programacion_nombre, "Reporte principal");
   assert.equal(database.state.config.ultimo_envio_fecha, null);
 });
@@ -443,7 +446,7 @@ test("solo incluye asistentes activos con rol trabajador y respeta la seleccion"
       id: index + 1,
       usuario_id: usuarioId,
       fecha: "2026-08-04",
-      estado: "Presente",
+      estado: "PUNTUAL",
       created_at: `2026-08-04T14:3${index}:00Z`
     }))
   });
@@ -462,6 +465,32 @@ test("solo incluye asistentes activos con rol trabajador y respeta la seleccion"
     usuario_ids: []
   });
   assert.deepEqual(allActive.map((worker) => worker.usuario_id).sort((a, b) => a - b), [8, 9, 12]);
+});
+
+test("reporta como ausentes a los trabajadores activos sin asistencia puntual o con tardanza no marcada", async () => {
+  const database = fakeDatabase({
+    usuarios: [
+      { id: 8, nombre: "Ana", email: "ana@example.com", rol: "operante", activo: true },
+      { id: 9, nombre: "Luis", email: "luis@example.com", rol: "Jefe de Equipo", activo: true },
+      { id: 12, nombre: "Rosa", email: "rosa@example.com", rol: "TRABAJADOR", activo: true }
+    ],
+    asistencias: [
+      { id: 1, usuario_id: 8, fecha: "2026-08-04", estado: "PUNTUAL", created_at: "2026-08-04T14:30:00Z" },
+      { id: 2, usuario_id: 9, fecha: "2026-08-04", estado: "AUSENTE", created_at: null }
+    ]
+  });
+
+  const absentAll = await readAbsentAttendances(database, "2026-08-04", {
+    incluir_todos_activos: true,
+    usuario_ids: []
+  });
+  assert.deepEqual(absentAll.map((worker) => worker.usuario_id).sort((a, b) => a - b), [9, 12]);
+
+  const absentSelected = await readAbsentAttendances(database, "2026-08-04", {
+    incluir_todos_activos: false,
+    usuario_ids: [8, 9]
+  });
+  assert.deepEqual(absentSelected.map((worker) => worker.usuario_id), [9]);
 });
 
 test("un reporte enviado de una programacion no bloquea otra", async () => {

@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, ClipboardCheck, Clock3, GraduationCap, LockKeyhole, Mail, Pencil, Plus, RefreshCcw, Save, Search, Send, Trash2, UsersRound, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ClipboardCheck, Clock3, Eye, EyeOff, GraduationCap, LockKeyhole, Mail, Pencil, Plus, RefreshCcw, Save, Search, Send, Trash2, UsersRound, X } from "lucide-react";
 import {
+  createAmonestacion,
   createAttendanceReportSettings,
   createTask,
   createTienda,
   createUser,
+  deleteAmonestacion,
   deleteAttendanceReportSettings,
   deleteTask,
   deleteTienda,
@@ -16,6 +18,7 @@ import {
   getAttendanceReportSettings,
   getUserTrainingProfile,
   listAllActivityLogs,
+  listAmonestaciones,
   listAttendances,
   listTasks,
   listTiendas,
@@ -82,6 +85,7 @@ export default function AdminDashboard({ section }) {
   if (section === "Asistencia") return <AttendancePanel />;
   if (section === "Notificaciones") return <NotificationsPanel />;
   if (section === "Tiendas") return <StoresPanel />;
+  if (section === "Amonestaciones") return <WarningsPanel />;
   return <WorkerPointsPanel />;
 }
 
@@ -99,6 +103,7 @@ function UsersPanel() {
   const [tab, setTab] = useState("Crear");
   const [status, setStatus] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
   const [createForm, setCreateForm] = useState({
     nombre: "",
     email: "",
@@ -240,7 +245,9 @@ function UsersPanel() {
     }
   }
 
-  const rows = users.map((user) => ({
+  const inactiveCount = users.filter((user) => !boolValue(user.activo)).length;
+  const visibleUsers = showInactive ? users : users.filter((user) => boolValue(user.activo));
+  const rows = visibleUsers.map((user) => ({
     id: user.id,
     Nombre: user.nombre,
     Usuario: user.email,
@@ -252,7 +259,19 @@ function UsersPanel() {
 
   return (
     <div className="stack">
-      <Panel title="Gestion de usuarios" eyebrow="Administracion">
+      <Panel
+        title="Gestion de usuarios"
+        eyebrow="Administracion"
+        actions={
+          <Button
+            variant="secondary"
+            icon={showInactive ? EyeOff : Eye}
+            onClick={() => setShowInactive((current) => !current)}
+          >
+            {showInactive ? "Ocultar inactivos" : `Mostrar inactivos (${inactiveCount})`}
+          </Button>
+        }
+      >
         <Alert>Presiona un trabajador para abrir su perfil y revisar sus capacitaciones.</Alert>
         {loading ? (
           <LoadingBlock />
@@ -261,6 +280,7 @@ function UsersPanel() {
             rows={rows}
             columns={["Nombre", "Usuario", "Rol", "Activo", "Fecha nacimiento"]}
             onRowClick={(row) => setProfileUserId(String(row.id))}
+            empty={showInactive ? "No hay usuarios registrados." : "No hay usuarios activos. Presiona \"Mostrar inactivos\" para verlos."}
           />
         )}
         {error ? <Alert type="error">{error}</Alert> : null}
@@ -907,6 +927,16 @@ function ScoreFields({ form, setForm }) {
   return <Alert>Las tareas por tiempo usan la matriz historica de minutos.</Alert>;
 }
 
+const attendanceStateOptions = [
+  { value: "AUSENTE", label: "Ausente" },
+  { value: "PUNTUAL", label: "Puntual" },
+  { value: "TARDANZA", label: "Tardanza" }
+];
+
+function attendanceStateLabel(value) {
+  return attendanceStateOptions.find((option) => option.value === value)?.label || "Ausente";
+}
+
 function AttendancePanel() {
   const [selectedDate, setSelectedDate] = useState(todayLimaISO());
   const [workerStatusFilter, setWorkerStatusFilter] = useState("activos");
@@ -928,16 +958,16 @@ function AttendancePanel() {
   );
 
   useEffect(() => {
-    const currentMap = Object.fromEntries((data.current || []).map((row) => [row.usuario_id, row.estado === "Presente"]));
+    const currentMap = Object.fromEntries((data.current || []).map((row) => [row.usuario_id, String(row.estado || "AUSENTE").toUpperCase()]));
     const nextValues = {};
     (data.workers || []).forEach((worker) => {
-      nextValues[worker.id] = Boolean(currentMap[worker.id]);
+      nextValues[worker.id] = currentMap[worker.id] || "AUSENTE";
     });
     setAttendanceValues(nextValues);
   }, [data.current, data.workers]);
 
   const currentMarks = useMemo(
-    () => Object.fromEntries((data.current || []).map((row) => [row.usuario_id, row.estado === "Presente"])),
+    () => Object.fromEntries((data.current || []).map((row) => [row.usuario_id, String(row.estado || "AUSENTE").toUpperCase()])),
     [data.current]
   );
 
@@ -959,8 +989,8 @@ function AttendancePanel() {
     setSaving(true);
     try {
       for (const worker of data.workers || []) {
-        const nextValue = Boolean(attendanceValues[worker.id]);
-        if (Boolean(currentMarks[worker.id]) !== nextValue) {
+        const nextValue = attendanceValues[worker.id] || "AUSENTE";
+        if ((currentMarks[worker.id] || "AUSENTE") !== nextValue) {
           await markAttendance(worker.id, selectedDate, nextValue);
         }
       }
@@ -979,8 +1009,8 @@ function AttendancePanel() {
     Fecha: item.fecha,
     Trabajador: workerNameById[item.usuario_id],
     Email: workerEmailById[item.usuario_id],
-    Estado: item.estado || "Presente",
-    "Marcado en": String(item.estado || "").toLowerCase() === "ausente" ? "" : formatDateTimeLima(item.created_at)
+    Estado: attendanceStateLabel(String(item.estado || "AUSENTE").toUpperCase()),
+    "Marcado en": String(item.estado || "").toUpperCase() === "AUSENTE" ? "" : formatDateTimeLima(item.created_at)
   }));
 
   function exportAttendance() {
@@ -1023,17 +1053,18 @@ function AttendancePanel() {
         ) : null}
         <div className="attendance-list">
           {visibleWorkers.map((worker) => (
-            <label key={worker.id} className="attendance-row">
+            <div key={worker.id} className="attendance-row">
               <span>
                 <strong>{worker.nombre || "Sin nombre"}</strong>
                 <small>{worker.email} · {boolValue(worker.activo) ? "Activo" : "Inactivo"}</small>
               </span>
-              <input
-                type="checkbox"
-                checked={Boolean(attendanceValues[worker.id])}
-                onChange={(event) => setAttendanceValues({ ...attendanceValues, [worker.id]: event.target.checked })}
+              <SelectInput
+                label="Estado"
+                value={attendanceValues[worker.id] || "AUSENTE"}
+                onChange={(value) => setAttendanceValues({ ...attendanceValues, [worker.id]: value })}
+                options={attendanceStateOptions}
               />
-            </label>
+            </div>
           ))}
         </div>
         <div className="form-actions">
@@ -1283,6 +1314,7 @@ function AttendanceNotificationsPanel() {
     Estado: reportStatusLabels[item.estado] || item.estado,
     Destinatarios: notificationRecipients(item.destinatarios).join(", "),
     Asistentes: item.asistentes_count ?? "",
+    Ausentes: item.ausentes_count ?? "",
     Intentos: item.intentos ?? 1,
     "Fecha de envio": item.enviado_en ? formatDateTimeLima(item.enviado_en) : "",
     Detalle: item.detalle_error || ""
@@ -1403,7 +1435,7 @@ function AttendanceNotificationsPanel() {
         : notificationRecipients(config.destinatarios).length;
       setStatus({
         type: "success",
-        message: `${config.nombre || "El reporte"} se envio a ${recipientsCount} correo(s), con ${result.attendeesCount ?? 0} asistente(s).`
+        message: `${config.nombre || "El reporte"} se envio a ${recipientsCount} correo(s): ${result.attendeesCount ?? 0} asistente(s) y ${result.absenteesCount ?? 0} ausente(s).`
       });
     } catch (err) {
       setStatus({ type: "error", message: friendlyError(err) });
@@ -1891,6 +1923,168 @@ function StoresPanel() {
             </div>
           ) : null}
         </form>
+      </Panel>
+    </div>
+  );
+}
+
+function emptyWarningForm() {
+  return { usuario_id: "", descripcion: "" };
+}
+
+function WarningsPanel() {
+  const { data, loading, error, reload } = useAsyncData(
+    async () => {
+      const [warnings, users] = await Promise.all([listAmonestaciones(), selectUsers()]);
+      return { warnings, users };
+    },
+    [],
+    { warnings: [], users: [] }
+  );
+  const [tab, setTab] = useState("Registrar");
+  const [form, setForm] = useState(emptyWarningForm);
+  const [selectedWarningId, setSelectedWarningId] = useState("");
+  const [status, setStatus] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const users = data.users || [];
+  const warnings = data.warnings || [];
+  const activeUsers = users.filter((user) => boolValue(user.activo));
+  const userById = Object.fromEntries(users.map((user) => [String(user.id), user]));
+  const selectedWarning = warnings.find((warning) => String(warning.id) === String(selectedWarningId));
+
+  const countsByUserId = warnings.reduce((acc, warning) => {
+    const key = String(warning.usuario_id);
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  const summaryRows = activeUsers
+    .map((user) => ({
+      id: user.id,
+      Trabajador: user.nombre || user.email,
+      Usuario: user.email,
+      Rol: normalizeRole(user.rol),
+      Amonestaciones: countsByUserId[String(user.id)] || 0
+    }))
+    .sort((a, b) => b.Amonestaciones - a.Amonestaciones || a.Trabajador.localeCompare(b.Trabajador));
+
+  const historyRows = warnings.map((warning) => {
+    const user = userById[String(warning.usuario_id)];
+    const author = userById[String(warning.created_by)];
+    return {
+      id: warning.id,
+      Fecha: formatDateTimeLima(warning.created_at),
+      Trabajador: user?.nombre || user?.email || `Usuario ${warning.usuario_id}`,
+      Descripcion: warning.descripcion,
+      "Registrado por": author?.nombre || author?.email || "-"
+    };
+  });
+
+  async function handleCreate(event) {
+    event.preventDefault();
+    setStatus(null);
+    if (!form.usuario_id) {
+      setStatus({ type: "error", message: "Selecciona un usuario activo." });
+      return;
+    }
+    if (!form.descripcion.trim()) {
+      setStatus({ type: "error", message: "La descripcion es obligatoria." });
+      return;
+    }
+    setSaving(true);
+    try {
+      await createAmonestacion({ usuario_id: Number(form.usuario_id), descripcion: form.descripcion.trim() });
+      setForm(emptyWarningForm());
+      setStatus({ type: "success", message: "Amonestacion registrada correctamente." });
+      reload();
+    } catch (err) {
+      setStatus({ type: "error", message: friendlyError(err) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!selectedWarning) return;
+    setStatus(null);
+    setSaving(true);
+    try {
+      await deleteAmonestacion(selectedWarning.id);
+      setSelectedWarningId("");
+      setStatus({ type: "success", message: "Amonestacion eliminada correctamente." });
+      reload();
+    } catch (err) {
+      setStatus({ type: "error", message: friendlyError(err) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="stack">
+      <Panel title="Amonestaciones por usuario" eyebrow="Resumen" actions={<Button variant="secondary" icon={RefreshCcw} onClick={reload}>Actualizar</Button>}>
+        {loading ? <LoadingBlock /> : <DataTable rows={summaryRows} columns={["Trabajador", "Usuario", "Rol", "Amonestaciones"]} empty="No hay usuarios activos para mostrar." />}
+        {error ? <Alert type="error">{error}</Alert> : null}
+      </Panel>
+
+      <Panel>
+        <Tabs tabs={["Registrar", "Eliminar"]} active={tab} onChange={setTab} />
+        <StatusAlert status={status} />
+
+        {tab === "Registrar" ? (
+          <form className="form-grid" onSubmit={handleCreate}>
+            <SelectInput
+              label="Usuario"
+              value={form.usuario_id}
+              onChange={(usuario_id) => setForm({ ...form, usuario_id })}
+              options={[
+                { value: "", label: "Selecciona un usuario activo" },
+                ...activeUsers.map((user) => ({ value: String(user.id), label: `${user.nombre || user.email} (${normalizeRole(user.rol)})` }))
+              ]}
+            />
+            <div className="form-span">
+              <TextArea
+                label="Descripcion"
+                value={form.descripcion}
+                onChange={(descripcion) => setForm({ ...form, descripcion })}
+                rows={3}
+                placeholder="Detalla el motivo de la amonestacion"
+              />
+            </div>
+            <div className="form-span">
+              <Button type="submit" icon={AlertTriangle} loading={saving}>Registrar amonestacion</Button>
+            </div>
+          </form>
+        ) : (
+          <div className="stack">
+            <SelectInput
+              label="Amonestacion a eliminar"
+              value={selectedWarningId}
+              onChange={setSelectedWarningId}
+              options={[
+                { value: "", label: "Selecciona una amonestacion" },
+                ...warnings.map((warning) => {
+                  const user = userById[String(warning.usuario_id)];
+                  const label = `${warning.id} - ${user?.nombre || user?.email || `Usuario ${warning.usuario_id}`} - ${String(warning.descripcion || "").slice(0, 40)}`;
+                  return { value: String(warning.id), label };
+                })
+              ]}
+            />
+            {selectedWarning ? (
+              <div className="danger-zone">
+                <p>
+                  Eliminaras la amonestacion de {userById[String(selectedWarning.usuario_id)]?.nombre || userById[String(selectedWarning.usuario_id)]?.email}: "{selectedWarning.descripcion}".
+                </p>
+                <Button variant="danger" icon={Trash2} loading={saving} onClick={handleDelete}>Eliminar amonestacion</Button>
+              </div>
+            ) : null}
+          </div>
+        )}
+      </Panel>
+
+      <Panel title="Historial de amonestaciones" eyebrow="Detalle">
+        {loading ? <LoadingBlock /> : <DataTable rows={historyRows} columns={["Fecha", "Trabajador", "Descripcion", "Registrado por"]} empty="Todavia no se registraron amonestaciones." />}
       </Panel>
     </div>
   );

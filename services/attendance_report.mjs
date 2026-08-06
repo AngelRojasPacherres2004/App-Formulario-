@@ -250,27 +250,33 @@ export async function readActiveAttendanceWorkers(db) {
   return workers.filter((worker) => worker.activo === true && WORKER_ROLES.has(normalizeWorkerRole(worker.rol)));
 }
 
-export async function readPresentAttendances(db, reportDate, config = null) {
+const ATTENDED_STATES = new Set(["PUNTUAL", "TARDANZA"]);
+
+async function readAttendanceRowsForDate(db, reportDate) {
   if (!DATE_PATTERN.test(String(reportDate || ""))) throw new Error("La fecha del reporte no es valida.");
   const attendanceResult = await db
     .from("asistencias")
     .select("id,usuario_id,fecha,estado,created_at")
     .eq("fecha", reportDate)
-    .ilike("estado", "Presente")
     .order("created_at", { ascending: true });
-  const attendances = databaseError(attendanceResult, "No se pudo consultar la asistencia.") || [];
-  if (!attendances.length) return [];
+  return databaseError(attendanceResult, "No se pudo consultar la asistencia.") || [];
+}
 
+function selectedActiveWorkers(activeWorkers, config) {
   const includeAllActive = config?.incluir_todos_activos !== false;
   const selectedIds = new Set(normalizePositiveIds(config?.usuario_ids));
   if (!includeAllActive && !selectedIds.size) return [];
+  return activeWorkers.filter((worker) => includeAllActive || selectedIds.has(Number(worker.id)));
+}
+
+export async function readPresentAttendances(db, reportDate, config = null) {
+  const rows = await readAttendanceRowsForDate(db, reportDate);
+  const attended = rows.filter((row) => ATTENDED_STATES.has(String(row.estado || "").toUpperCase()));
+  if (!attended.length) return [];
+
   const activeWorkers = await readActiveAttendanceWorkers(db);
-  const usersById = new Map(
-    activeWorkers
-      .filter((worker) => includeAllActive || selectedIds.has(Number(worker.id)))
-      .map((worker) => [Number(worker.id), worker])
-  );
-  return attendances
+  const usersById = new Map(selectedActiveWorkers(activeWorkers, config).map((worker) => [Number(worker.id), worker]));
+  return attended
     .map((attendance) => {
       const user = usersById.get(Number(attendance.usuario_id));
       if (!user) return null;
@@ -279,6 +285,7 @@ export async function readPresentAttendances(db, reportDate, config = null) {
         usuario_id: attendance.usuario_id,
         fecha: attendance.fecha,
         marcado_en: attendance.created_at,
+        estado: String(attendance.estado || "").toUpperCase(),
         nombre: user?.nombre || `Usuario ${attendance.usuario_id}`,
         email: user?.email || "",
         rol: user?.rol || ""
@@ -288,20 +295,56 @@ export async function readPresentAttendances(db, reportDate, config = null) {
     .sort((left, right) => left.nombre.localeCompare(right.nombre, "es", { sensitivity: "base" }));
 }
 
-export function buildAttendanceReport({ reportDate, attendees, timeZone = REPORT_TIME_ZONE }) {
-  const rows = Array.isArray(attendees) ? attendees : [];
+export async function readAbsentAttendances(db, reportDate, config = null) {
+  const rows = await readAttendanceRowsForDate(db, reportDate);
+  const attendedIds = new Set(
+    rows
+      .filter((row) => ATTENDED_STATES.has(String(row.estado || "").toUpperCase()))
+      .map((row) => Number(row.usuario_id))
+  );
+
+  const activeWorkers = await readActiveAttendanceWorkers(db);
+  return selectedActiveWorkers(activeWorkers, config)
+    .filter((worker) => !attendedIds.has(Number(worker.id)))
+    .map((worker) => ({
+      usuario_id: Number(worker.id),
+      nombre: worker.nombre || `Usuario ${worker.id}`,
+      email: worker.email || "",
+      rol: worker.rol || ""
+    }))
+    .sort((left, right) => left.nombre.localeCompare(right.nombre, "es", { sensitivity: "base" }));
+}
+
+function attendanceStateLabel(estado) {
+  return String(estado || "").toUpperCase() === "TARDANZA" ? "Tardanza" : "Puntual";
+}
+
+export function buildAttendanceReport({ reportDate, attendees, absentees = [], timeZone = REPORT_TIME_ZONE }) {
+  const attendeeRows = Array.isArray(attendees) ? attendees : [];
+  const absentRows = Array.isArray(absentees) ? absentees : [];
   const formattedDate = displayDate(reportDate);
-  const tableRows = rows.map((row, index) => `
+
+  const attendeeTableRows = attendeeRows.map((row, index) => `
     <tr>
       <td style="padding:10px;border-bottom:1px solid #dce6e2;">${index + 1}</td>
       <td style="padding:10px;border-bottom:1px solid #dce6e2;font-weight:700;">${escapeHtml(row.nombre)}</td>
       <td style="padding:10px;border-bottom:1px solid #dce6e2;">${escapeHtml(row.email || "Sin correo")}</td>
       <td style="padding:10px;border-bottom:1px solid #dce6e2;">${escapeHtml(row.rol || "Sin rol")}</td>
+      <td style="padding:10px;border-bottom:1px solid #dce6e2;">${escapeHtml(attendanceStateLabel(row.estado))}</td>
       <td style="padding:10px;border-bottom:1px solid #dce6e2;">${escapeHtml(displayDateTime(row.marcado_en, timeZone))}</td>
     </tr>`).join("");
+  const attendeeEmptyRow = `
+    <tr><td colspan="6" style="padding:24px;text-align:center;color:#66756f;">No se registraron personas presentes en esta fecha.</td></tr>`;
 
-  const emptyRow = `
-    <tr><td colspan="5" style="padding:24px;text-align:center;color:#66756f;">No se registraron personas presentes en esta fecha.</td></tr>`;
+  const absentTableRows = absentRows.map((row, index) => `
+    <tr>
+      <td style="padding:10px;border-bottom:1px solid #dce6e2;">${index + 1}</td>
+      <td style="padding:10px;border-bottom:1px solid #dce6e2;font-weight:700;">${escapeHtml(row.nombre)}</td>
+      <td style="padding:10px;border-bottom:1px solid #dce6e2;">${escapeHtml(row.email || "Sin correo")}</td>
+      <td style="padding:10px;border-bottom:1px solid #dce6e2;">${escapeHtml(row.rol || "Sin rol")}</td>
+    </tr>`).join("");
+  const absentEmptyRow = `
+    <tr><td colspan="4" style="padding:24px;text-align:center;color:#66756f;">No se registraron personas ausentes en esta fecha.</td></tr>`;
 
   const html = `<!doctype html>
   <html lang="es">
@@ -313,9 +356,16 @@ export function buildAttendanceReport({ reportDate, attendees, timeZone = REPORT
           <p style="margin:0;color:#c8d7d1;">${escapeHtml(formattedDate)}</p>
         </div>
         <div style="background:#fff;border:1px solid #dce6e2;border-top:0;border-radius:0 0 14px 14px;padding:24px;">
-          <div style="display:inline-block;background:#e6f7f1;color:#086451;border-radius:999px;padding:10px 16px;font-weight:800;margin-bottom:20px;">
-            ${rows.length} ${rows.length === 1 ? "persona asistio" : "personas asistieron"}
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;">
+            <div style="background:#e6f7f1;color:#086451;border-radius:999px;padding:10px 16px;font-weight:800;">
+              ${attendeeRows.length} ${attendeeRows.length === 1 ? "persona asistio" : "personas asistieron"}
+            </div>
+            <div style="background:#fdeeee;color:#a3312a;border-radius:999px;padding:10px 16px;font-weight:800;">
+              ${absentRows.length} ${absentRows.length === 1 ? "persona no asistio" : "personas no asistieron"}
+            </div>
           </div>
+
+          <h2 style="margin:0 0 10px;font-size:17px;">Reporte 1 \u00B7 Asistieron</h2>
           <div style="overflow-x:auto;">
             <table style="width:100%;border-collapse:collapse;font-size:14px;">
               <thead>
@@ -324,33 +374,65 @@ export function buildAttendanceReport({ reportDate, attendees, timeZone = REPORT
                   <th style="padding:10px;">Trabajador</th>
                   <th style="padding:10px;">Correo</th>
                   <th style="padding:10px;">Rol</th>
+                  <th style="padding:10px;">Estado</th>
                   <th style="padding:10px;">Marcado en</th>
                 </tr>
               </thead>
-              <tbody>${tableRows || emptyRow}</tbody>
+              <tbody>${attendeeTableRows || attendeeEmptyRow}</tbody>
             </table>
           </div>
+
+          <h2 style="margin:26px 0 10px;font-size:17px;">Reporte 2 \u00B7 No asistieron</h2>
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:14px;">
+              <thead>
+                <tr style="background:#edf3f0;text-align:left;">
+                  <th style="padding:10px;">Nro.</th>
+                  <th style="padding:10px;">Trabajador</th>
+                  <th style="padding:10px;">Correo</th>
+                  <th style="padding:10px;">Rol</th>
+                </tr>
+              </thead>
+              <tbody>${absentTableRows || absentEmptyRow}</tbody>
+            </table>
+          </div>
+
           <p style="margin:22px 0 0;color:#66756f;font-size:12px;">Este reporte fue generado automaticamente desde el modulo de asistencia.</p>
         </div>
       </div>
     </body>
   </html>`;
 
-  const textRows = rows.length
-    ? rows.map((row, index) => `${index + 1}. ${row.nombre} | ${row.email || "Sin correo"} | ${row.rol || "Sin rol"} | ${displayDateTime(row.marcado_en, timeZone)}`).join("\n")
+  const textAttendeeRows = attendeeRows.length
+    ? attendeeRows.map((row, index) => `${index + 1}. ${row.nombre} | ${row.email || "Sin correo"} | ${row.rol || "Sin rol"} | ${attendanceStateLabel(row.estado)} | ${displayDateTime(row.marcado_en, timeZone)}`).join("\n")
     : "No se registraron personas presentes en esta fecha.";
-  const text = `REPORTE DIARIO DE ASISTENCIA\nFecha: ${formattedDate}\nTotal de asistentes: ${rows.length}\n\n${textRows}`;
+  const textAbsentRows = absentRows.length
+    ? absentRows.map((row, index) => `${index + 1}. ${row.nombre} | ${row.email || "Sin correo"} | ${row.rol || "Sin rol"}`).join("\n")
+    : "No se registraron personas ausentes en esta fecha.";
+  const text = `REPORTE DIARIO DE ASISTENCIA\nFecha: ${formattedDate}\nTotal de asistentes: ${attendeeRows.length}\nTotal de ausentes: ${absentRows.length}\n\nREPORTE 1 - ASISTIERON\n${textAttendeeRows}\n\nREPORTE 2 - NO ASISTIERON\n${textAbsentRows}`;
 
-  const csvHeader = ["Nro.", "Trabajador", "Correo", "Rol", "Fecha", "Marcado en"];
-  const csvRows = rows.map((row, index) => [
+  const csvHeader = ["Reporte", "Nro.", "Trabajador", "Correo", "Rol", "Estado", "Fecha", "Marcado en"];
+  const csvAttendeeRows = attendeeRows.map((row, index) => [
+    "Asistieron",
     index + 1,
     row.nombre,
     row.email,
     row.rol,
+    attendanceStateLabel(row.estado),
     reportDate,
     displayDateTime(row.marcado_en, timeZone)
   ]);
-  const csv = `\uFEFF${[csvHeader, ...csvRows].map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
+  const csvAbsentRows = absentRows.map((row, index) => [
+    "No asistieron",
+    index + 1,
+    row.nombre,
+    row.email,
+    row.rol,
+    "Ausente",
+    reportDate,
+    ""
+  ]);
+  const csv = `\uFEFF${[csvHeader, ...csvAttendeeRows, ...csvAbsentRows].map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
   return { html, text, csv };
 }
 
@@ -453,17 +535,22 @@ export async function sendAttendanceReport({
   let mailAccepted = false;
   let historyConfirmed = false;
   try {
-    const attendees = await readPresentAttendances(db, reportDate, config);
+    const [attendees, absentees] = await Promise.all([
+      readPresentAttendances(db, reportDate, config),
+      readAbsentAttendances(db, reportDate, config)
+    ]);
     databaseError(await db
       .from("reporte_asistencia_envios")
       .update({
         programacion_nombre: String(config.nombre || `Programacion ${configId}`),
-        asistentes_count: attendees.length
+        asistentes_count: attendees.length,
+        ausentes_count: absentees.length
       })
       .eq("id", claim.log.id), "No se pudo actualizar el total de asistentes del reporte.");
     const content = buildAttendanceReport({
       reportDate,
       attendees,
+      absentees,
       timeZone: config.zona_horaria || REPORT_TIME_ZONE
     });
     const mailer = mailTransport
@@ -494,6 +581,7 @@ export async function sendAttendanceReport({
       .update({
         estado: "enviado",
         asistentes_count: attendees.length,
+        ausentes_count: absentees.length,
         mensaje_id: String(mailResult?.messageId || "") || null,
         detalle_error: null,
         enviado_en: sentAt
@@ -519,6 +607,7 @@ export async function sendAttendanceReport({
       reportDate,
       recipients,
       attendeesCount: attendees.length,
+      absenteesCount: absentees.length,
       messageId: String(mailResult?.messageId || "") || null,
       sentAt,
       attempt: claim.attempt,

@@ -527,6 +527,41 @@ export async function deleteTienda(tiendaId) {
   return { deleted: true, archived: false };
 }
 
+export async function listAmonestaciones() {
+  const apiResult = await requestLocalApi("/api/amonestaciones");
+  if (apiResult?.amonestaciones) return apiResult.amonestaciones;
+
+  const result = await db().from("amonestaciones").select("*").order("created_at", { ascending: false });
+  if (result.error) return [];
+  return result.data || [];
+}
+
+export async function createAmonestacion(payload) {
+  const apiResult = await requestLocalApi("/api/amonestaciones", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+  if (apiResult?.amonestacion) return apiResult.amonestacion;
+
+  const result = await db().from("amonestaciones").insert(payload).select("*").single();
+  if (result.error) {
+    if (isMissingTableError(result.error, "amonestaciones")) {
+      throw new Error("La tabla public.amonestaciones no existe. Ejecuta la migracion SQL.");
+    }
+    throw result.error;
+  }
+  return result.data;
+}
+
+export async function deleteAmonestacion(amonestacionId) {
+  const apiResult = await requestLocalApi(`/api/amonestaciones/${encodeURIComponent(amonestacionId)}`, { method: "DELETE" });
+  if (apiResult?.deleted) return apiResult;
+
+  const result = await db().from("amonestaciones").delete().eq("id", amonestacionId);
+  if (result.error) throw result.error;
+  return { deleted: true };
+}
+
 export async function listAttendances() {
   const apiResult = await requestLocalApi("/api/attendances");
   if (apiResult?.attendances) return apiResult.attendances;
@@ -547,19 +582,23 @@ export async function getAttendanceForDate(fecha) {
   return result.data || [];
 }
 
-export async function markAttendance(usuarioId, fecha, presente = true) {
+export const ATTENDANCE_STATES = ["AUSENTE", "PUNTUAL", "TARDANZA"];
+
+export async function markAttendance(usuarioId, fecha, estado = "PUNTUAL") {
+  const normalizedEstado = String(estado || "").trim().toUpperCase();
   const apiResult = await requestLocalApi("/api/attendances", {
     method: "PUT",
-    body: JSON.stringify({ usuario_id: usuarioId, fecha, presente })
+    body: JSON.stringify({ usuario_id: usuarioId, fecha, estado: normalizedEstado })
   });
   if (apiResult?.attendance) return apiResult.attendance;
 
+  const present = normalizedEstado !== "AUSENTE";
   const tableName = await getAttendanceTableName();
   const payload = {
     usuario_id: usuarioId,
     fecha,
-    estado: presente ? "Presente" : "Ausente",
-    created_at: presente ? nowLimaISODateTime() : null
+    estado: normalizedEstado,
+    created_at: present ? nowLimaISODateTime() : null
   };
   const result = await db().from(tableName).upsert(payload, { onConflict: "usuario_id,fecha" });
   if (result.error) {

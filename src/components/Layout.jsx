@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  AlertTriangle,
   BarChart3,
   BellRing,
   CalendarCheck2,
@@ -24,6 +25,7 @@ const adminItems = [
   { key: "Asistencia", icon: CalendarCheck2 },
   { key: "Notificaciones", icon: BellRing },
   { key: "Tiendas", icon: Store },
+  { key: "Amonestaciones", icon: AlertTriangle },
   { key: "Puntos", icon: BarChart3 }
 ];
 
