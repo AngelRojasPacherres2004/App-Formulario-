@@ -54,6 +54,30 @@ const usersToSeed = [
     rol: "operante",
     activo: true,
     fecha_cumpleanos: null
+  },
+  {
+    nombre: "Jefe de Equipo Demo",
+    email: "equipo@empresa.com",
+    password_hash: "Equipo123!",
+    rol: "jefe de equipo",
+    activo: true,
+    fecha_cumpleanos: null
+  },
+  {
+    nombre: "Jefe de Grupo Demo",
+    email: "grupo@empresa.com",
+    password_hash: "Grupo123!",
+    rol: "jefe de grupo",
+    activo: true,
+    fecha_cumpleanos: null
+  },
+  {
+    nombre: "Usuario Otros Demo",
+    email: "otros@empresa.com",
+    password_hash: "Otros123!",
+    rol: "otros",
+    activo: true,
+    fecha_cumpleanos: null
   }
 ];
 
@@ -65,12 +89,41 @@ async function main() {
 
   if (health.error) throw health.error;
 
-  const upsert = await supabase
+  const existing = await supabase
     .from("usuarios")
-    .upsert(usersToSeed, { onConflict: "email" })
-    .select("id,nombre,email,rol,activo");
+    .select("id,email")
+    .in("email", usersToSeed.map((user) => user.email));
 
-  if (upsert.error) throw upsert.error;
+  if (existing.error) throw existing.error;
+
+  const existingIdByEmail = new Map(existing.data.map((row) => [row.email, row.id]));
+  const toUpdate = usersToSeed.filter((user) => existingIdByEmail.has(user.email));
+  const toInsert = usersToSeed.filter((user) => !existingIdByEmail.has(user.email));
+
+  for (const user of toUpdate) {
+    const updated = await supabase
+      .from("usuarios")
+      .update(user)
+      .eq("id", existingIdByEmail.get(user.email));
+    if (updated.error) throw updated.error;
+  }
+
+  if (toInsert.length) {
+    // La secuencia de public.usuarios se desincroniza cuando se importan filas
+    // con id explicito (ver nextTableId en server.mjs), asi que se calcula el
+    // siguiente id disponible en vez de dejar que Postgres lo autogenere.
+    const maxIdResult = await supabase
+      .from("usuarios")
+      .select("id")
+      .order("id", { ascending: false })
+      .limit(1);
+    if (maxIdResult.error) throw maxIdResult.error;
+    let nextId = Number(maxIdResult.data?.[0]?.id || 0) + 1;
+
+    const rowsWithIds = toInsert.map((user) => ({ ...user, id: nextId++ }));
+    const inserted = await supabase.from("usuarios").insert(rowsWithIds);
+    if (inserted.error) throw inserted.error;
+  }
 
   const verify = await supabase
     .from("usuarios")
@@ -109,10 +162,11 @@ async function main() {
         usuarios_count_before_seed: health.count,
         seeded: verify.data,
         login_checks: loginChecks,
-        credentials: [
-          { email: "admin@empresa.com", password: "Admin123!", rol: "administrador" },
-          { email: "user@empresa.com", password: "User123!", rol: "operante" }
-        ]
+        credentials: usersToSeed.map((user) => ({
+          email: user.email,
+          password: user.password_hash,
+          rol: user.rol
+        }))
       },
       null,
       2
