@@ -648,28 +648,49 @@ export async function sendAttendanceReportNow(configId, fecha) {
 }
 
 export async function getActivityReportSettings() {
-  const result = await requestLocalApi("/api/activity-report/settings", {}, { requiredBackend: true });
-  if (result?.config) return result;
+  const apiResult = await requestLocalApi("/api/activity-report/settings", {}, { requiredBackend: true });
+  if (Array.isArray(apiResult?.configs)) return apiResult;
   throw new Error("El backend actual no incluye el reporte de registros de actividades.");
 }
 
-export async function updateActivityReportSettings(payload) {
-  const result = await requestLocalApi("/api/activity-report/settings", {
+export async function createActivityReportSettings(payload) {
+  const apiResult = await requestLocalApi("/api/activity-report/settings", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  }, { requiredBackend: true });
+  if (apiResult?.config) return apiResult.config;
+  throw new Error("No se pudo crear la programacion del reporte de actividades.");
+}
+
+export async function updateActivityReportSettings(configId, payload) {
+  const apiResult = await requestLocalApi(`/api/activity-report/settings/${encodeURIComponent(configId)}`, {
     method: "PUT",
     body: JSON.stringify(payload)
   }, { requiredBackend: true });
-  if (result?.config) return result.config;
+  if (apiResult?.config) return apiResult.config;
   throw new Error("No se pudo guardar la configuracion del reporte de actividades.");
 }
 
-export async function getActivityReportPreview(fecha, turno) {
-  const result = await requestLocalApi(`/api/activity-report/preview?date=${encodeURIComponent(fecha)}&shift=${encodeURIComponent(turno)}`, {}, { requiredBackend: true });
+export async function deleteActivityReportSettings(configId) {
+  const apiResult = await requestLocalApi(`/api/activity-report/settings/${encodeURIComponent(configId)}`, {
+    method: "DELETE"
+  }, { requiredBackend: true });
+  if (apiResult && (apiResult.deleted || apiResult.archived || apiResult.config)) return apiResult;
+  throw new Error("No se pudo eliminar la programacion del reporte de actividades.");
+}
+
+export async function getActivityReportPreview(configId, fecha, turno) {
+  const result = await requestLocalApi(
+    `/api/activity-report/settings/${encodeURIComponent(configId)}/preview?date=${encodeURIComponent(fecha)}&shift=${encodeURIComponent(turno)}`,
+    {},
+    { requiredBackend: true }
+  );
   if (result?.report) return result.report;
   throw new Error("No se pudo generar el reporte de actividades.");
 }
 
-export async function sendActivityReportNow(fecha, turno) {
-  const result = await requestLocalApi("/api/activity-report/send", {
+export async function sendActivityReportNow(configId, fecha, turno) {
+  const result = await requestLocalApi(`/api/activity-report/settings/${encodeURIComponent(configId)}/send`, {
     method: "POST",
     body: JSON.stringify({ fecha, turno })
   }, { requiredBackend: true });

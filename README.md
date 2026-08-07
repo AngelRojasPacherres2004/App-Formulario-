@@ -20,9 +20,9 @@ El despliegue debe incluir el repositorio completo. Subir solamente la carpeta `
 
 ## Reportes automaticos de notificaciones
 
-1. Ejecuta, en orden, `sql/017_reporte_asistencia_automatico.sql`, `sql/018_multiples_programaciones_reporte_asistencia.sql` y `sql/019_reporte_actividades_por_turno.sql` en el editor SQL de Supabase.
+1. Ejecuta, en orden, `sql/017_reporte_asistencia_automatico.sql`, `sql/018_multiples_programaciones_reporte_asistencia.sql`, `sql/019_reporte_actividades_por_turno.sql` y `sql/022_multiples_programaciones_reporte_actividad.sql` en el editor SQL de Supabase.
 2. Activa la verificacion en dos pasos de `calzado661@gmail.com` y crea una contrasena de aplicacion para el sistema.
 3. Guarda `GMAIL_USER` y `GMAIL_APP_PASSWORD` como variables privadas con alcance **Functions** en Netlify.
 4. Publica el sitio. La funcion programada revisa cada minuto la hora configurada en el apartado **Notificaciones** (zona horaria `America/Lima`).
 
-Cada programacion de asistencia puede tener su propio nombre, horario, destinatarios y seleccion de trabajadores activos. La pestaña **Registros de actividades** permite configurar dos cortes diarios para los operantes activos: mañana y tarde. Las programaciones eliminadas se archivan para conservar su historial de envios. La contrasena de Gmail nunca se guarda en Supabase ni se envia al navegador.
+Cada programacion de asistencia puede tener su propio nombre, horario, destinatarios y seleccion de trabajadores activos. La pestaña **Registros de actividades** admite de la misma forma varias programaciones, cada una con su propio nombre, horarios de mañana y tarde, destinatarios y seleccion de operantes activos. Cada correo de asistencia incluye dos reportes (asistieron / no asistieron) y cada correo de actividades incluye dos reportes (registraron actividad / no registraron). Las programaciones eliminadas se archivan para conservar su historial de envios. La contrasena de Gmail nunca se guarda en Supabase ni se envia al navegador.
